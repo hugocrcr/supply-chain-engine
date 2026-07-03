@@ -28,7 +28,7 @@ DB_CONFIG = {
     "port": 5432,
     "database": "postgres",
     "user": "postgres.wnwuaeuifcdxncdbhjrj",
-    "password": "Onizuka97229?",
+    "password": st.secrets["supabase_password"],
     "sslmode": "require",
 }
 
