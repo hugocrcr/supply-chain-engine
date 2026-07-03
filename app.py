@@ -646,7 +646,6 @@ with tab4:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 5: AI ASSISTANT (Phase B — scaffold)
 # ══════════════════════════════════════════════════════════════════════════════
-
 with tab5:
     st.subheader("🤖 AI Supply Chain Assistant")
     st.markdown("""
@@ -663,14 +662,6 @@ with tab5:
     The AI will generate SQL queries against your live Supabase data and return 
     contextual answers with specific recommendations.
     """)
-
-    # Placeholder chat interface
-    user_input = st.chat_input("Ask a question about your supply chain data...")
-    if user_input:
-        with st.chat_message("user"):
-            st.write(user_input)
-        with st.chat_message("assistant"):
-            st.write("🔧 AI Assistant is being built in Phase B. Check back soon!")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
