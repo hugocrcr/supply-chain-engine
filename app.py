@@ -379,15 +379,15 @@ with col_refresh:
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📊 Executive Dashboard",
     "📦 Inventory Detail",
     "🚚 Operations",
     "🔄 Reorder Recommendations",
     "🤖 AI Assistant",
     "🔔 Alert History",
+    "🏥 Data Health",
 ])
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1: EXECUTIVE DASHBOARD
@@ -898,7 +898,168 @@ with tab6:
         | Weekly Brief | Every Monday 8am | 🔧 In progress |
         | AI Narrative Alerts | Per-SKU recommendations | 🔧 In progress |
         """)
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 7: DATA HEALTH
+# ══════════════════════════════════════════════════════════════════════════════
 
+with tab7:
+    st.subheader("🏥 Data Health Monitor")
+    st.caption("Real-time data quality checks across your orders and inventory tables.")
+
+    st.markdown("### Data Freshness")
+    freshness = run_query("""
+        SELECT
+            (SELECT COUNT(*) FROM orders) AS total_orders,
+            (SELECT COUNT(*) FROM inventory) AS total_skus,
+            (SELECT MAX(order_date) FROM orders) AS latest_order,
+            (SELECT MAX(updated_at) FROM inventory) AS last_inventory_update
+    """)
+
+    if not freshness.empty:
+        f = freshness.iloc[0]
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        with fc1:
+            st.markdown(kpi_card("Total Orders", format_number(f["total_orders"]), "kpi-info"), unsafe_allow_html=True)
+        with fc2:
+            st.markdown(kpi_card("Total SKUs", format_number(f["total_skus"]), "kpi-info"), unsafe_allow_html=True)
+        with fc3:
+            latest = str(f["latest_order"])[:10] if f["latest_order"] else "N/A"
+            st.markdown(kpi_card("Latest Order", latest, "kpi-info"), unsafe_allow_html=True)
+        with fc4:
+            inv_update = str(f["last_inventory_update"])[:10] if f["last_inventory_update"] else "N/A"
+            st.markdown(kpi_card("Last Inventory Sync", inv_update, "kpi-info"), unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    health_left, health_right = st.columns(2)
+
+    with health_left:
+        st.markdown("### Missing Values Check")
+        missing = run_query("""
+            SELECT 'Orders — Product Name' AS field,
+                COUNT(*) FILTER (WHERE product_name IS NULL OR product_name = '') AS missing,
+                COUNT(*) AS total
+            FROM orders
+            UNION ALL
+            SELECT 'Orders — Quantity',
+                COUNT(*) FILTER (WHERE quantity IS NULL OR quantity = 0), COUNT(*) FROM orders
+            UNION ALL
+            SELECT 'Orders — Amount',
+                COUNT(*) FILTER (WHERE total_amount IS NULL OR total_amount = 0), COUNT(*) FROM orders
+            UNION ALL
+            SELECT 'Orders — Date',
+                COUNT(*) FILTER (WHERE order_date IS NULL), COUNT(*) FROM orders
+            UNION ALL
+            SELECT 'Inventory — Unit Cost',
+                COUNT(*) FILTER (WHERE unit_cost IS NULL OR unit_cost <= 0), COUNT(*) FROM inventory
+            UNION ALL
+            SELECT 'Inventory — Stock',
+                COUNT(*) FILTER (WHERE current_stock IS NULL OR current_stock < 0), COUNT(*) FROM inventory
+        """)
+
+        if not missing.empty:
+            missing.columns = ["Field", "Missing", "Total"]
+            st.dataframe(missing, use_container_width=True)
+
+    with health_right:
+        st.markdown("### Duplicates & Outliers")
+
+        dupes = run_query("""
+            SELECT product_name, COUNT(*) AS count
+            FROM inventory GROUP BY product_name HAVING COUNT(*) > 1
+            ORDER BY count DESC LIMIT 10
+        """)
+
+        if not dupes.empty:
+            st.markdown("**Duplicate SKUs:**")
+            dupes.columns = ["Product Name", "Count"]
+            st.dataframe(dupes, use_container_width=True)
+        else:
+            st.success("✅ No duplicate SKUs found")
+
+        outliers = run_query("""
+            SELECT product_name, unit_cost
+            FROM inventory
+            WHERE unit_cost > (SELECT AVG(unit_cost) * 5 FROM inventory WHERE unit_cost > 0)
+            AND unit_cost > 0
+            ORDER BY unit_cost DESC LIMIT 10
+        """)
+
+        if not outliers.empty:
+            st.markdown("**Price Outliers (5x+ above average):**")
+            outliers.columns = ["Product", "Unit Cost"]
+            st.dataframe(
+                outliers.style.format({"Unit Cost": "${:,.2f}"}),
+                use_container_width=True,
+            )
+        else:
+            st.success("✅ No price outliers detected")
+
+    st.markdown("---")
+
+    st.markdown("### Orders vs Inventory Consistency")
+    cons_left, cons_right = st.columns(2)
+
+    with cons_left:
+        st.markdown("**Inventory SKUs with no orders:**")
+        no_orders = run_query("""
+            SELECT i.product_name, i.current_stock, i.inventory_value
+            FROM inventory i
+            LEFT JOIN orders o ON i.product_name = o.product_name
+            WHERE o.product_name IS NULL
+            ORDER BY i.inventory_value DESC LIMIT 10
+        """)
+
+        if not no_orders.empty:
+            no_orders.columns = ["Product", "Stock", "Value"]
+            st.dataframe(
+                no_orders.style.format({"Value": "${:,.0f}", "Stock": "{:,.0f}"}),
+                use_container_width=True,
+            )
+            st.warning(f"⚠️ {len(no_orders)} SKUs have inventory but zero order history")
+        else:
+            st.success("✅ All inventory SKUs have matching orders")
+
+    with cons_right:
+        st.markdown("**Orders for products not in inventory:**")
+        no_inv = run_query("""
+            SELECT o.product_name, COUNT(*) AS orders, SUM(o.total_amount) AS revenue
+            FROM orders o
+            LEFT JOIN inventory i ON o.product_name = i.product_name
+            WHERE i.product_name IS NULL
+            GROUP BY o.product_name
+            ORDER BY revenue DESC LIMIT 10
+        """)
+
+        if not no_inv.empty:
+            no_inv.columns = ["Product", "Orders", "Revenue"]
+            st.dataframe(
+                no_inv.style.format({"Revenue": "${:,.0f}"}),
+                use_container_width=True,
+            )
+            st.warning(f"⚠️ {len(no_inv)} products have orders but no inventory record")
+        else:
+            st.success("✅ All ordered products exist in inventory")
+
+    st.markdown("---")
+
+    total_issues = run_query("""
+        SELECT
+            (SELECT COUNT(*) FILTER (WHERE product_name IS NULL OR product_name = '') FROM orders) +
+            (SELECT COUNT(*) FILTER (WHERE quantity IS NULL OR quantity = 0) FROM orders) +
+            (SELECT COUNT(*) FROM (SELECT product_name FROM inventory GROUP BY product_name HAVING COUNT(*) > 1) d) +
+            (SELECT COUNT(*) FROM inventory WHERE unit_cost <= 0 OR unit_cost IS NULL)
+        AS total_issues
+    """)
+
+    if not total_issues.empty:
+        issues = int(total_issues.iloc[0]["total_issues"])
+        if issues == 0:
+            st.success("✅ **EXCELLENT** — No data quality issues detected.")
+        elif issues <= 5:
+            st.warning(f"⚠️ **GOOD** — {issues} minor issues detected. Review above.")
+        else:
+            st.error(f"🔴 **NEEDS ATTENTION** — {issues} issues found. Clean before trusting metrics.")
 
 # ── FOOTER ────────────────────────────────────────────────────────────────────
 
