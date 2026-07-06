@@ -378,7 +378,6 @@ with col_refresh:
 
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
-
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📊 Executive Dashboard",
     "📦 Inventory Detail",
@@ -388,6 +387,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🔔 Alert History",
     "🏥 Data Health",
 ])
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1: EXECUTIVE DASHBOARD
@@ -811,13 +811,18 @@ with tab5:
                     st.dataframe(df, use_container_width=True)
 
     # Chat input
-    user_input = st.chat_input("Ask a question about your supply chain data...")
+    user_input = st.text_input("Ask a question about your supply chain data...", key="ai_input")
 
     # Handle either typed input or suggestion button
-    question = user_input or st.session_state.pending_question
-    if question:
+    question = None
+    if st.session_state.pending_question:
+        question = st.session_state.pending_question
         st.session_state.pending_question = None
+    elif user_input and user_input != st.session_state.get("last_question", ""):
+        question = user_input
+        st.session_state.last_question = user_input
 
+    if question:
         # Display user message
         with st.chat_message("user"):
             st.markdown(question)
