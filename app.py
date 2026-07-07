@@ -76,16 +76,14 @@ st.markdown("""
 <style>
     .block-container { padding-top: 2rem; padding-bottom: 1rem; }
     
+    # Add this to your CSS in app.py
     .kpi-card {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-        border: 1px solid #2a2a4a;
-        border-radius: 12px;
-        padding: 20px;
-        text-align: center;
-        min-height: 120px;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    border: 1px solid #2a2a4a;
+    border-radius: 16px;  /* rounder corners */
+    padding: 24px;
+    min-height: 130px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);  /* subtle shadow */
     }
     .kpi-value {
         font-size: 28px;
@@ -491,7 +489,16 @@ with tab1:
         else:
             st.info("No excess stock data available.")
 
-
+    # Cash Recovery Summary
+    st.markdown("---")
+    rc1, rc2, rc3 = st.columns(3)
+    with rc1:
+        st.markdown(kpi_card("Cash Recovered (MTD)", "$0", "kpi-success"), unsafe_allow_html=True)
+    with rc2:
+        st.markdown(kpi_card("Actions Taken", "0", "kpi-success"), unsafe_allow_html=True)
+    with rc3:
+        st.markdown(kpi_card("Days Active", "1", "kpi-info"), unsafe_allow_html=True)
+        
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2: INVENTORY DETAIL
 # ══════════════════════════════════════════════════════════════════════════════
