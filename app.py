@@ -585,7 +585,7 @@ with tab2:
                 height=500, plot_bgcolor="#ffffff",
                 paper_bgcolor="#ffffff",
                 font=dict(color="#1a1a2e"),
-                xaxis=dict(gridcolor="#f0f0f0"),,
+                xaxis=dict(gridcolor="#f0f0f0"),
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
