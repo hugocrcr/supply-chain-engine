@@ -32,7 +32,7 @@ DB_CONFIG = {
     "database": "postgres",
     "user": "postgres.wnwuaeuifcdxncdbhjrj",
     "password": st.secrets["supabase_password"],
-    "sslmode": "require",
+    "sslmode": "require", "connect_timeout": 30,
 }
 
 ANTHROPIC_API_KEY = st.secrets["anthropic_api_key"]
@@ -76,35 +76,39 @@ st.markdown("""
 <style>
     .block-container { padding-top: 2rem; padding-bottom: 1rem; }
     
-    # Add this to your CSS in app.py
+    /* Light theme KPI cards */
     .kpi-card {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-    border: 1px solid #2a2a4a;
-    border-radius: 16px;  /* rounder corners */
-    padding: 24px;
-    min-height: 130px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);  /* subtle shadow */
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 20px;
+        text-align: center;
+        min-height: 120px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
     }
     .kpi-value {
         font-size: 28px;
         font-weight: 700;
-        color: #e0e0e0;
+        color: #1a1a2e;
         margin-bottom: 4px;
     }
     .kpi-label {
         font-size: 13px;
-        color: #8888aa;
+        color: #6b7280;
         text-transform: uppercase;
         letter-spacing: 1px;
     }
-    .kpi-danger .kpi-value { color: #ff6b6b; }
-    .kpi-warning .kpi-value { color: #ffa94d; }
-    .kpi-success .kpi-value { color: #51cf66; }
-    .kpi-info .kpi-value { color: #74c0fc; }
+    .kpi-danger .kpi-value { color: #dc2626; }
+    .kpi-warning .kpi-value { color: #d97706; }
+    .kpi-success .kpi-value { color: #16a34a; }
+    .kpi-info .kpi-value { color: #2563eb; }
     
     .main-header {
         font-size: 14px;
-        color: #888;
+        color: #6b7280;
         text-transform: uppercase;
         letter-spacing: 2px;
         margin-bottom: 0;
@@ -113,6 +117,7 @@ st.markdown("""
     .main-title {
         font-size: 28px;
         font-weight: 700;
+        color: #1a1a2e;
         margin-top: 0;
         padding-top: 0;
         margin-bottom: 24px;
@@ -126,7 +131,6 @@ st.markdown("""
     header {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
-
 
 # ── HELPER FUNCTIONS ──────────────────────────────────────────────────────────
 
@@ -365,14 +369,16 @@ def ask_claude(user_question, conversation_history):
 
 # ── HEADER ────────────────────────────────────────────────────────────────────
 
-st.markdown('<p class="main-header">SupplyStack</p>', unsafe_allow_html=True)
-st.markdown('<h1 class="main-title">📊 Inventory Operations Dashboard</h1>', unsafe_allow_html=True)
-
-col_refresh, col_spacer = st.columns([1, 5])
-with col_refresh:
-    if st.button("🔄 Refresh Data", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
+st.markdown("""
+<div style="display: flex; align-items: center; gap: 16px; margin-bottom: 24px;">
+    <div style="width: 40px; height: 40px; background: #2563eb; border-radius: 8px; 
+         display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; color: #ffffff;">S</div>
+    <div>
+        <p style="margin: 0; font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 2px;">SupplyStack</p>
+        <h1 style="margin: 0; font-size: 24px; font-weight: 700; color: #1a1a2e;">Inventory Operations Dashboard</h1>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
@@ -452,9 +458,11 @@ with tab1:
                 labels={"dead_value": "Dead Stock Value ($)", "category": ""},
             )
             fig.update_layout(
-                height=400, plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#ccc"), xaxis=dict(gridcolor="rgba(255,255,255,0.1)"),
-                yaxis=dict(autorange="reversed"), margin=dict(l=0, r=20, t=10, b=40),
+                height=400, plot_bgcolor="#ffffff",
+                paper_bgcolor="#ffffff",
+                font=dict(color="#1a1a2e"),
+                xaxis=dict(gridcolor="#f0f0f0"),
+                yaxis=dict(gridcolor="#f0f0f0"), margin=dict(l=0, r=20, t=10, b=40),
                 showlegend=False,
             )
             fig.update_traces(hovertemplate="<b>%{y}</b><br>$%{x:,.0f}<extra></extra>")
@@ -479,9 +487,11 @@ with tab1:
                 labels={"excess_val": "Excess Stock Value ($)", "warehouse": ""},
             )
             fig.update_layout(
-                height=400, plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#ccc"), xaxis=dict(gridcolor="rgba(255,255,255,0.1)"),
-                yaxis=dict(autorange="reversed"), margin=dict(l=0, r=20, t=10, b=40),
+                height=400, plot_bgcolor="#ffffff",
+                paper_bgcolor="#ffffff",
+                font=dict(color="#1a1a2e"),
+                xaxis=dict(gridcolor="#f0f0f0"),
+                yaxis=dict(gridcolor="#f0f0f0"), margin=dict(l=0, r=20, t=10, b=40),
                 showlegend=False,
             )
             fig.update_traces(hovertemplate="<b>%{y}</b><br>$%{x:,.0f}<extra></extra>")
@@ -498,7 +508,7 @@ with tab1:
         st.markdown(kpi_card("Actions Taken", "0", "kpi-success"), unsafe_allow_html=True)
     with rc3:
         st.markdown(kpi_card("Days Active", "1", "kpi-info"), unsafe_allow_html=True)
-        
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2: INVENTORY DETAIL
 # ══════════════════════════════════════════════════════════════════════════════
@@ -572,9 +582,10 @@ with tab2:
                 log_y=True,
             )
             fig.update_layout(
-                height=500, plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#ccc"), xaxis=dict(gridcolor="rgba(255,255,255,0.1)"),
-                yaxis=dict(gridcolor="rgba(255,255,255,0.1)"), margin=dict(l=0, r=20, t=10, b=40),
+                height=500, plot_bgcolor="#ffffff",
+                paper_bgcolor="#ffffff",
+                font=dict(color="#1a1a2e"),
+                xaxis=dict(gridcolor="#f0f0f0"),,
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -652,8 +663,10 @@ with tab3:
                 color_discrete_sequence=["#ff6b6b", "#74c0fc", "#ffa94d", "#51cf66"],
             )
             fig.update_layout(
-                height=350, plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#ccc"), margin=dict(l=0, r=0, t=10, b=10),
+                height=350, plot_bgcolor="#ffffff",
+                paper_bgcolor="#ffffff",
+                font=dict(color="#1a1a2e"),
+                xaxis=dict(gridcolor="#f0f0f0"), margin=dict(l=0, r=0, t=10, b=10),
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
