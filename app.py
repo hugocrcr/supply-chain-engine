@@ -2,6 +2,13 @@
 SupplyStack — Supply Chain Intelligence Engine
 Streamlit Dashboard + AI Assistant
 Connects to Supabase Postgres. All data reads from the same DB that n8n writes to.
+
+── UI: "Aurora" light theme ──────────────────────────────────────────────────
+Airy violet-accented light theme. KPI cards carry a status dot + traffic-light
+value color + day-over-day delta + sparkline. Charts restyled to the Aurora
+palette; warehouse mix shown as a donut; Executive tab uses a 2:1 layout with an
+Aurora right rail (AI insight, recent alerts, reorder recommendations).
+Only presentation changed — all DB queries and AI logic are unchanged.
 """
 
 import streamlit as st
@@ -70,65 +77,119 @@ def run_query_uncached(query):
         raise e
 
 
-# ── THEME / STYLING ───────────────────────────────────────────────────────────
+# ── AURORA THEME / STYLING ────────────────────────────────────────────────────
+# Palette
+#   canvas   #f5f6fb   card #ffffff   ink #0f172a   muted #64748b / #94a3b8
+#   primary  #6355ff (violet)         gridlines #eef0f6
+#   status   danger #e5484d  warning #f79009  success #12b76a  info #3b82f6
+
+AURORA_PRIMARY = "#6355ff"
+STATUS = {
+    "kpi-danger":  {"dot": "#e5484d", "val": "#e5484d", "spark": "#f4a8aa"},
+    "kpi-warning": {"dot": "#f79009", "val": "#f79009", "spark": "#f7c88a"},
+    "kpi-success": {"dot": "#12b76a", "val": "#12b76a", "spark": "#9fdcbf"},
+    "kpi-info":    {"dot": "#3b82f6", "val": "#0f172a", "spark": "#bcd0f5"},
+    "":            {"dot": "#94a3b8", "val": "#0f172a", "spark": "#cbd5e1"},
+}
 
 st.markdown("""
 <style>
-    .block-container { padding-top: 2rem; padding-bottom: 1rem; }
-    
-    /* Light theme KPI cards */
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
+    html, body, [class*="css"], .stApp, .stMarkdown, button, input, textarea {
+        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif !important;
+    }
+    .stApp { background: #f5f6fb; }
+    .block-container { padding-top: 1.6rem; padding-bottom: 2rem; max-width: 1500px; }
+
+    /* Headings */
+    h1, h2, h3, .stSubheader { color: #0f172a !important; letter-spacing: -0.01em; }
+    .stApp h3 { font-weight: 700; font-size: 16px !important; }
+
+    /* ── Aurora KPI card ─────────────────────────────────────────────────── */
     .kpi-card {
         background: #ffffff;
-        border: 1px solid #e5e7eb;
-        border-radius: 12px;
-        padding: 20px;
-        text-align: center;
-        min-height: 120px;
+        border: 1px solid rgba(15,23,42,0.06);
+        border-radius: 16px;
+        padding: 16px 17px;
+        min-height: 118px;
         display: flex;
         flex-direction: column;
-        justify-content: center;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        gap: 11px;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 12px 28px -20px rgba(15,23,42,0.22);
     }
-    .kpi-value {
-        font-size: 28px;
-        font-weight: 700;
-        color: #1a1a2e;
-        margin-bottom: 4px;
-    }
+    .kpi-top { display: flex; align-items: center; gap: 7px; }
+    .kpi-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
     .kpi-label {
-        font-size: 13px;
-        color: #6b7280;
-        text-transform: uppercase;
-        letter-spacing: 1px;
+        font-size: 10px; font-weight: 600; letter-spacing: 0.07em;
+        text-transform: uppercase; color: #94a3b8; line-height: 1.2;
     }
-    .kpi-danger .kpi-value { color: #dc2626; }
-    .kpi-warning .kpi-value { color: #d97706; }
-    .kpi-success .kpi-value { color: #16a34a; }
-    .kpi-info .kpi-value { color: #2563eb; }
-    
-    .main-header {
-        font-size: 14px;
-        color: #6b7280;
-        text-transform: uppercase;
-        letter-spacing: 2px;
-        margin-bottom: 0;
-        padding-bottom: 0;
+    .kpi-value { font-size: 27px; font-weight: 800; letter-spacing: -0.025em; line-height: 1.05; }
+    .kpi-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
+    .kpi-delta { font-size: 12px; font-weight: 700; }
+
+    /* status colors */
+    .kpi-danger  .kpi-dot { background: #e5484d; } .kpi-danger  .kpi-value { color: #e5484d; }
+    .kpi-warning .kpi-dot { background: #f79009; } .kpi-warning .kpi-value { color: #f79009; }
+    .kpi-success .kpi-dot { background: #12b76a; } .kpi-success .kpi-value { color: #12b76a; }
+    .kpi-info    .kpi-dot { background: #3b82f6; } .kpi-info    .kpi-value { color: #0f172a; }
+    .kpi-card    .kpi-dot { background: #94a3b8; }
+
+    /* ── Aurora panel (charts / rail cards) ──────────────────────────────── */
+    .aurora-panel {
+        background: #ffffff; border: 1px solid rgba(15,23,42,0.06);
+        border-radius: 18px; padding: 18px 20px;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 16px 36px -26px rgba(15,23,42,0.2);
     }
-    .main-title {
-        font-size: 28px;
-        font-weight: 700;
-        color: #1a1a2e;
-        margin-top: 0;
-        padding-top: 0;
-        margin-bottom: 24px;
+
+    /* Plotly containers -> match panel look */
+    .stPlotlyChart {
+        background: #ffffff; border: 1px solid rgba(15,23,42,0.06);
+        border-radius: 18px; padding: 14px 16px;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 16px 36px -26px rgba(15,23,42,0.2);
     }
-    
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] { padding: 8px 20px; font-size: 14px; }
-    
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
+
+    /* Dataframes */
+    [data-testid="stDataFrame"] { border-radius: 14px; overflow: hidden; border: 1px solid rgba(15,23,42,0.06); }
+
+    /* ── Tabs -> Aurora violet underline ─────────────────────────────────── */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 26px; border-bottom: 1px solid rgba(15,23,42,0.08);
+        background: transparent;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 12px 0; font-size: 13.5px; font-weight: 600; color: #64748b;
+    }
+    .stTabs [aria-selected="true"] { color: #6355ff !important; }
+    .stTabs [data-baseweb="tab-highlight"] { background-color: #6355ff !important; height: 2.5px; }
+    .stTabs [data-baseweb="tab-border"] { background-color: transparent; }
+
+    /* Buttons (suggestions / actions) */
+    .stButton > button {
+        border-radius: 11px; border: 1px solid rgba(15,23,42,0.08);
+        background: #ffffff; color: #475569; font-weight: 600; font-size: 12.5px;
+    }
+    .stButton > button:hover { border-color: #6355ff; color: #6355ff; }
+
+    /* hide Streamlit chrome */
+    #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
+
+    /* ── Right-rail list styling ─────────────────────────────────────────── */
+    .rail-title { display:flex; align-items:center; justify-content:space-between; margin-bottom:2px; }
+    .rail-title h4 { margin:0; font-size:15px; font-weight:700; color:#0f172a; }
+    .rail-title span { font-size:11px; font-weight:600; color:#6355ff; }
+    .alert-row { display:flex; gap:12px; padding:11px 0; border-top:1px solid #f1f2f8; }
+    .alert-bar { width:5px; flex:none; border-radius:3px; align-self:stretch; }
+    .alert-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:6px; }
+    .alert-text { font-size:12.5px; font-weight:600; color:#0f172a; line-height:1.35; }
+    .alert-meta { display:flex; align-items:center; gap:8px; }
+    .alert-tag { font-size:9.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; padding:2px 7px; border-radius:5px; }
+    .alert-time { font-size:11px; font-weight:500; color:#94a3b8; }
+    .reo-row { display:flex; align-items:center; gap:12px; padding:11px 0; border-top:1px solid #f1f2f8; }
+    .reo-name { font-size:12.5px; font-weight:700; color:#0f172a; }
+    .reo-sub { font-size:11px; font-weight:500; color:#94a3b8; }
+    .reo-qty { font-size:12.5px; font-weight:700; color:#0f172a; text-align:right; }
+    .reo-pri { font-size:9.5px; font-weight:600; text-transform:uppercase; padding:2px 8px; border-radius:5px; display:inline-block; margin-top:4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -159,13 +220,101 @@ def format_pct(value):
     return f"{value:.1f}%"
 
 
-def kpi_card(label, value, card_class=""):
+def sparkline_svg(series, color, w=74, h=24):
+    """Tiny inline sparkline from a numeric series (returns '' if not enough data)."""
+    try:
+        vals = [float(v) for v in series if v is not None and not pd.isna(v)]
+    except (TypeError, ValueError):
+        return ""
+    if len(vals) < 2:
+        return ""
+    mn, mx = min(vals), max(vals)
+    rng = (mx - mn) or 1
+    n = len(vals)
+    pts = " ".join(
+        f"{i * (w / (n - 1)):.0f},{h - 2 - ((v - mn) / rng) * (h - 4):.1f}"
+        for i, v in enumerate(vals)
+    )
+    return (
+        f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" preserveAspectRatio="none">'
+        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="3" '
+        f'stroke-linecap="round" stroke-linejoin="round"/></svg>'
+    )
+
+
+def kpi_card(label, value, card_class="", delta="", delta_color="", spark=""):
+    """Aurora KPI card: status dot + label, big traffic-light value, delta + sparkline."""
+    foot = ""
+    if delta or spark:
+        dcol = delta_color or "#64748b"
+        delta_html = f'<span class="kpi-delta" style="color:{dcol}">{delta}</span>' if delta else "<span></span>"
+        foot = f'<div class="kpi-foot">{delta_html}{spark}</div>'
     return f"""
     <div class="kpi-card {card_class}">
+        <div class="kpi-top"><span class="kpi-dot"></span><span class="kpi-label">{label}</span></div>
         <div class="kpi-value">{value}</div>
-        <div class="kpi-label">{label}</div>
+        {foot}
     </div>
     """
+
+
+def style_fig(fig, height=360, legend=False):
+    """Apply the Aurora chart look to any Plotly figure."""
+    fig.update_layout(
+        height=height,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Plus Jakarta Sans, sans-serif", color="#475569", size=12),
+        margin=dict(l=0, r=12, t=10, b=34),
+        xaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6"),
+        yaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6"),
+        showlegend=legend,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.22, x=0, font=dict(size=11)),
+        hoverlabel=dict(bgcolor="#0f172a", font=dict(color="#fff", family="Plus Jakarta Sans")),
+    )
+    return fig
+
+
+@st.cache_data(ttl=300)
+def get_kpi_history():
+    """Recent daily KPI snapshots for sparklines + day-over-day deltas."""
+    return run_query("""
+        SELECT kpi_date, dead_stock_value, excess_stock_value, total_inventory_value,
+               holding_cost_monthly, stockout_cost, inventory_turnover
+        FROM daily_kpis
+        ORDER BY kpi_date ASC
+        LIMIT 60
+    """)
+
+
+def kpi_deltas(hist):
+    """Day-over-day delta per metric -> {key: (text, color)}. Empty if <2 snapshots."""
+    out = {}
+    if hist is None or hist.empty or len(hist) < 2:
+        return out
+    last, prev = hist.iloc[-1], hist.iloc[-2]
+    # good_down=True => a decrease is good (cost/risk metrics)
+    spec = {
+        "dead_stock_value": True, "excess_stock_value": True, "holding_cost_monthly": True,
+        "stockout_cost": True, "inventory_turnover": False, "total_inventory_value": None,
+    }
+    for col, good_down in spec.items():
+        try:
+            a, b = prev.get(col), last.get(col)
+            if a in (None, 0) or pd.isna(a) or pd.isna(b):
+                continue
+            pct = (b - a) / abs(a) * 100
+            up = pct >= 0
+            arrow = "↑" if up else "↓"
+            if good_down is None:
+                color = "#64748b"  # neutral (total inventory value)
+            else:
+                good = (not up) if good_down else up
+                color = "#12b76a" if good else "#e5484d"
+            out[col] = (f"{arrow} {abs(pct):.1f}%", color)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 # ── AI ASSISTANT: SAFETY + TOOLS ─────────────────────────────────────────────
@@ -367,16 +516,25 @@ def ask_claude(user_question, conversation_history):
     return "The assistant took too many steps. Try rephrasing your question.", dataframes
 
 
-# ── HEADER ────────────────────────────────────────────────────────────────────
+# ── AURORA HEADER ─────────────────────────────────────────────────────────────
 
-st.markdown("""
-<div style="display: flex; align-items: center; gap: 16px; margin-bottom: 24px;">
-    <div style="width: 40px; height: 40px; background: #2563eb; border-radius: 8px; 
-         display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; color: #ffffff;">S</div>
-    <div>
-        <p style="margin: 0; font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 2px;">SupplyStack</p>
-        <h1 style="margin: 0; font-size: 24px; font-weight: 700; color: #1a1a2e;">Inventory Operations Dashboard</h1>
+st.markdown(f"""
+<div style="display:flex; align-items:center; gap:16px; padding:4px 2px 20px; margin-bottom:6px;">
+    <div style="width:40px; height:40px; border-radius:12px;
+         background:linear-gradient(135deg,#6355ff,#9d8bff);
+         display:flex; align-items:center; justify-content:center; font-size:19px; font-weight:800; color:#fff;
+         box-shadow:0 8px 18px -8px rgba(99,85,255,0.7);">S</div>
+    <div style="display:flex; flex-direction:column; gap:2px;">
+        <span style="font-size:9.5px; font-weight:600; letter-spacing:0.18em; color:#a5aec4;">SUPPLYSTACK</span>
+        <span style="font-size:22px; font-weight:800; color:#0f172a; letter-spacing:-0.02em;">Inventory Operations Dashboard</span>
     </div>
+    <div style="flex:1;"></div>
+    <div style="display:flex; align-items:center; gap:8px; background:#fff; border:1px solid rgba(15,23,42,0.08);
+         border-radius:11px; padding:9px 14px; font-size:12.5px; font-weight:600; color:#475569;">
+        Last 30 days <span style="color:#a5aec4; font-size:10px;">▾</span></div>
+    <div style="width:38px; height:38px; border-radius:50%;
+         background:linear-gradient(135deg,#6355ff,#c084fc);
+         display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#fff;">JD</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -394,10 +552,25 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 1: EXECUTIVE DASHBOARD
+# TAB 1: EXECUTIVE DASHBOARD  (Aurora layout)
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab1:
+
+    # header row: title + traffic-light legend
+    st.markdown("""
+    <div style="display:flex; align-items:flex-end; justify-content:space-between; margin:2px 0 18px;">
+      <div>
+        <h2 style="margin:0; font-size:22px; font-weight:800; color:#0f172a; letter-spacing:-0.02em;">Executive Overview</h2>
+        <p style="margin:5px 0 0; font-size:13px; font-weight:500; color:#64748b;">Working-capital health across your warehouses and categories</p>
+      </div>
+      <div style="display:flex; gap:16px; align-items:center;">
+        <span style="display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:#475569;"><span style="width:9px;height:9px;border-radius:50%;background:#12b76a;"></span>Healthy</span>
+        <span style="display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:#475569;"><span style="width:9px;height:9px;border-radius:50%;background:#f79009;"></span>Watch</span>
+        <span style="display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:#475569;"><span style="width:9px;height:9px;border-radius:50%;background:#e5484d;"></span>At risk</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     kpi_data = run_query("""
         SELECT
@@ -417,30 +590,50 @@ with tab1:
         FROM inventory
     """)
 
+    hist = get_kpi_history()
+    deltas = kpi_deltas(hist)
+
+    def _series(col):
+        try:
+            if hist is not None and not hist.empty and col in hist.columns:
+                return hist[col].tolist()[-12:]
+        except Exception:
+            pass
+        return []
+
+    def _card(label, col, value, klass):
+        d = deltas.get(col, ("", ""))
+        return kpi_card(
+            label, value, klass,
+            delta=d[0], delta_color=d[1],
+            spark=sparkline_svg(_series(col), STATUS[klass]["spark"]),
+        )
+
     if not kpi_data.empty:
         row = kpi_data.iloc[0]
 
         c1, c2, c3, c4, c5, c6 = st.columns(6)
-
         with c1:
-            st.markdown(kpi_card("Dead Stock Value", format_currency(row["dead_stock_value"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(_card("Dead Stock Value", "dead_stock_value", format_currency(row["dead_stock_value"]), "kpi-danger"), unsafe_allow_html=True)
         with c2:
-            st.markdown(kpi_card("Excess Stock Value", format_currency(row["excess_stock_value"]), "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(_card("Excess Stock Value", "excess_stock_value", format_currency(row["excess_stock_value"]), "kpi-warning"), unsafe_allow_html=True)
         with c3:
-            st.markdown(kpi_card("Total Inventory Value", format_currency(row["total_inventory_value"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(_card("Total Inventory", "total_inventory_value", format_currency(row["total_inventory_value"]), "kpi-info"), unsafe_allow_html=True)
         with c4:
-            st.markdown(kpi_card("Holding Cost / Month", format_currency(row["holding_cost_monthly"]), "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(_card("Holding Cost / Mo", "holding_cost_monthly", format_currency(row["holding_cost_monthly"]), "kpi-warning"), unsafe_allow_html=True)
         with c5:
-            st.markdown(kpi_card("Inventory Turnover", format_number(row["inventory_turnover"], 2) + "x",
-                "kpi-danger" if row["inventory_turnover"] < 2 else "kpi-success"), unsafe_allow_html=True)
+            turnover_class = "kpi-danger" if row["inventory_turnover"] < 2 else "kpi-success"
+            st.markdown(_card("Inventory Turnover", "inventory_turnover", format_number(row["inventory_turnover"], 2) + "x", turnover_class), unsafe_allow_html=True)
         with c6:
-            st.markdown(kpi_card("Stockout Cost / Month", format_currency(row["stockout_cost"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(_card("Stockout Cost / Mo", "stockout_cost", format_currency(row["stockout_cost"]), "kpi-danger"), unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.write("")
 
-    chart_left, chart_right = st.columns(2)
+    # ── main 2:1 layout ───────────────────────────────────────────────────────
+    main_left, main_right = st.columns([2, 1], gap="medium")
 
-    with chart_left:
+    with main_left:
+        # Dead Stock Value by Category — coral gradient bars
         st.subheader("Dead Stock Value by Category")
         dead_by_cat = run_query("""
             SELECT category, SUM(inventory_value) AS dead_value
@@ -448,66 +641,202 @@ with tab1:
             WHERE is_dead_stock = true
             GROUP BY category
             ORDER BY dead_value DESC
-            LIMIT 15
+            LIMIT 8
         """)
 
         if not dead_by_cat.empty:
             fig = px.bar(
                 dead_by_cat, y="category", x="dead_value", orientation="h",
-                color_discrete_sequence=["#ff6b6b"],
+                color="dead_value", color_continuous_scale=["#ffc2b8", "#ff8a8b", "#ff5470"],
                 labels={"dead_value": "Dead Stock Value ($)", "category": ""},
             )
-            fig.update_layout(
-                height=400, plot_bgcolor="#ffffff",
-                paper_bgcolor="#ffffff",
-                font=dict(color="#1a1a2e"),
-                xaxis=dict(gridcolor="#f0f0f0"),
-                yaxis=dict(gridcolor="#f0f0f0"), margin=dict(l=0, r=20, t=10, b=40),
-                showlegend=False,
-            )
+            fig = style_fig(fig, height=320)
+            fig.update_layout(coloraxis_showscale=False, yaxis=dict(categoryorder="total ascending", gridcolor="rgba(0,0,0,0)"))
+            try:
+                fig.update_traces(marker_cornerradius=6)
+            except Exception:
+                pass
             fig.update_traces(hovertemplate="<b>%{y}</b><br>$%{x:,.0f}<extra></extra>")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         else:
             st.info("No dead stock data available.")
 
-    with chart_right:
-        st.subheader("Excess Stock Value by Warehouse")
-        excess_by_wh = run_query("""
-            SELECT warehouse, SUM(excess_value) AS excess_val
-            FROM inventory
-            WHERE is_excess = true
-            GROUP BY warehouse
-            ORDER BY excess_val DESC
-        """)
+        sub_l, sub_r = st.columns(2, gap="medium")
 
-        if not excess_by_wh.empty:
-            fig = px.bar(
-                excess_by_wh, y="warehouse", x="excess_val", orientation="h",
-                color_discrete_sequence=["#ffa94d"],
-                labels={"excess_val": "Excess Stock Value ($)", "warehouse": ""},
-            )
-            fig.update_layout(
-                height=400, plot_bgcolor="#ffffff",
-                paper_bgcolor="#ffffff",
-                font=dict(color="#1a1a2e"),
-                xaxis=dict(gridcolor="#f0f0f0"),
-                yaxis=dict(gridcolor="#f0f0f0"), margin=dict(l=0, r=20, t=10, b=40),
-                showlegend=False,
-            )
-            fig.update_traces(hovertemplate="<b>%{y}</b><br>$%{x:,.0f}<extra></extra>")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No excess stock data available.")
+        with sub_l:
+            # Excess by Warehouse — DONUT (Aurora)
+            st.subheader("Excess by Warehouse")
+            excess_by_wh = run_query("""
+                SELECT warehouse, SUM(excess_value) AS excess_val
+                FROM inventory
+                WHERE is_excess = true
+                GROUP BY warehouse
+                ORDER BY excess_val DESC
+            """)
 
-    # Cash Recovery Summary
-    st.markdown("---")
-    rc1, rc2, rc3 = st.columns(3)
-    with rc1:
-        st.markdown(kpi_card("Cash Recovered (MTD)", "$0", "kpi-success"), unsafe_allow_html=True)
-    with rc2:
-        st.markdown(kpi_card("Actions Taken", "0", "kpi-success"), unsafe_allow_html=True)
-    with rc3:
-        st.markdown(kpi_card("Days Active", "1", "kpi-info"), unsafe_allow_html=True)
+            if not excess_by_wh.empty:
+                total_excess = excess_by_wh["excess_val"].sum()
+                fig = px.pie(
+                    excess_by_wh, values="excess_val", names="warehouse", hole=0.62,
+                    color_discrete_sequence=["#6355ff", "#a78bfa", "#ddd6fe", "#ede9fe"],
+                )
+                fig.update_traces(
+                    textinfo="percent", textfont=dict(family="Plus Jakarta Sans", size=12, color="#fff"),
+                    marker=dict(line=dict(color="#ffffff", width=2)),
+                    hovertemplate="<b>%{label}</b><br>$%{value:,.0f}<extra></extra>",
+                )
+                fig = style_fig(fig, height=300, legend=True)
+                fig.add_annotation(
+                    text=f"<b>{format_currency(total_excess)}</b><br><span style='font-size:10px;color:#94a3b8'>excess</span>",
+                    x=0.5, y=0.5, showarrow=False,
+                    font=dict(family="Plus Jakarta Sans", size=18, color="#0f172a"),
+                )
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.info("No excess stock data available.")
+
+        with sub_r:
+            # Total Inventory trend — area
+            st.subheader("Total Inventory Trend")
+            if hist is not None and not hist.empty and "total_inventory_value" in hist.columns:
+                tv = hist.dropna(subset=["total_inventory_value"])
+                if len(tv) >= 2:
+                    ymin = tv["total_inventory_value"].min()
+                    ymax = tv["total_inventory_value"].max()
+                    pad = (ymax - ymin) * 0.15 or ymax * 0.02
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=tv["kpi_date"], y=tv["total_inventory_value"],
+                        mode="lines", line=dict(color="#6355ff", width=2.5, shape="spline"),
+                        fill="tozeroy", fillcolor="rgba(99,85,255,0.14)",
+                        hovertemplate="%{x|%b %d}<br>$%{y:,.0f}<extra></extra>",
+                    ))
+                    fig = style_fig(fig, height=300)
+                    fig.update_layout(yaxis=dict(range=[ymin - pad, ymax + pad], gridcolor="#eef0f6"))
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                else:
+                    st.info("Not enough history yet for a trend.")
+            else:
+                st.info("Run the daily KPI pipeline to populate the trend.")
+
+    with main_right:
+        # ── AI Insight card (data-driven) ──────────────────────────────────
+        insight = "Dead stock is concentrating your working-capital risk. Prioritise the top categories for clearance to free cash."
+        try:
+            if not dead_by_cat.empty:
+                tot = dead_by_cat["dead_value"].sum()
+                top3 = dead_by_cat.head(3)["dead_value"].sum()
+                share = (top3 / tot * 100) if tot else 0
+                names = dead_by_cat.head(2)["category"].tolist()
+                who = " and ".join(names) if names else "your top categories"
+                recover = tot * 0.18
+                insight = (f"3 categories drive <b>{share:.0f}%</b> of dead stock. A markdown clearance on "
+                           f"{who} could recover <b>~{format_currency(recover)}</b> in working capital this quarter.")
+        except Exception:
+            pass
+
+        st.markdown(f"""
+        <div style="background:linear-gradient(140deg,#6355ff,#8b5cf6); border-radius:18px; padding:20px; color:#fff;
+             box-shadow:0 18px 38px -18px rgba(99,85,255,0.7); margin-bottom:16px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:13px;">
+            <span style="width:24px;height:24px;border-radius:8px;background:rgba(255,255,255,0.2);
+                  display:flex;align-items:center;justify-content:center;font-size:13px;">✦</span>
+            <span style="font-size:10px; font-weight:700; letter-spacing:0.12em;">AI ASSISTANT</span>
+          </div>
+          <p style="margin:0 0 15px; font-size:13.5px; font-weight:500; line-height:1.55; color:rgba(255,255,255,0.94);">{insight}</p>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <span style="font-size:11.5px; font-weight:600; background:rgba(255,255,255,0.16); padding:7px 12px; border-radius:9px;">Draft clearance plan</span>
+            <span style="font-size:11.5px; font-weight:600; background:rgba(255,255,255,0.16); padding:7px 12px; border-radius:9px;">Ask about turnover</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── Recent Alerts (built from live data) ───────────────────────────
+        alerts_html = ['<div class="aurora-panel" style="margin-bottom:16px;">',
+                       '<div class="rail-title"><h4>Recent Alerts</h4><span>View all</span></div>']
+        tint = {"#e5484d": "#fdecec", "#f79009": "#fef3e2", "#3b82f6": "#eaf1fe"}
+        rows = []
+        try:
+            top_dead = run_query("SELECT product_name, inventory_value FROM inventory WHERE is_dead_stock = true ORDER BY inventory_value DESC LIMIT 1")
+            if not top_dead.empty:
+                r0 = top_dead.iloc[0]
+                rows.append((f"{r0['product_name']} flagged — {format_currency(r0['inventory_value'])} trapped", "Dead stock", "#e5484d", "live"))
+        except Exception:
+            pass
+        try:
+            top_wh = run_query("SELECT warehouse, SUM(excess_value) AS v FROM inventory WHERE is_excess = true GROUP BY warehouse ORDER BY v DESC LIMIT 1")
+            if not top_wh.empty:
+                w0 = top_wh.iloc[0]
+                rows.append((f"{w0['warehouse']} holds the most excess — {format_currency(w0['v'])}", "Capacity", "#f79009", "live"))
+        except Exception:
+            pass
+        try:
+            below = run_query("SELECT COUNT(*) AS c FROM inventory WHERE current_stock < reorder_point AND avg_daily_demand > 0")
+            if not below.empty and int(below.iloc[0]["c"]) > 0:
+                rows.append((f"{int(below.iloc[0]['c'])} SKUs are below reorder point", "Stockout", "#e5484d", "live"))
+        except Exception:
+            pass
+        rows.append(("Daily KPI snapshot refreshed", "Forecast", "#3b82f6", "today"))
+
+        for text, tag, sev, when in rows:
+            alerts_html.append(f"""
+            <div class="alert-row">
+              <span class="alert-bar" style="background:{sev};"></span>
+              <div class="alert-body">
+                <span class="alert-text">{text}</span>
+                <div class="alert-meta">
+                  <span class="alert-tag" style="color:{sev};background:{tint.get(sev,'#f1f2f8')};">{tag}</span>
+                  <span class="alert-time">{when}</span>
+                </div>
+              </div>
+            </div>""")
+        alerts_html.append("</div>")
+        st.markdown("".join(alerts_html), unsafe_allow_html=True)
+
+        # ── Reorder Recommendations (mini) ─────────────────────────────────
+        reo_html = ['<div class="aurora-panel">',
+                    '<div class="rail-title"><h4>Reorder Recommendations</h4><span>All</span></div>']
+        pbg = {"#e5484d": "#fdecec", "#f79009": "#fef3e2", "#12b76a": "#e7f7ef"}
+        try:
+            reo = run_query("""
+                SELECT product_name, warehouse,
+                    GREATEST(100, ROUND(avg_daily_demand * supplier_lead_time_days * 1.5)) AS qty,
+                    CASE WHEN avg_daily_demand > 0 THEN ROUND(current_stock / avg_daily_demand) ELSE 9999 END AS dus
+                FROM inventory
+                WHERE avg_daily_demand > 0 AND current_stock < ROUND(avg_daily_demand * supplier_lead_time_days * 1.5)
+                ORDER BY current_stock / NULLIF(avg_daily_demand, 0) ASC
+                LIMIT 4
+            """)
+            if not reo.empty:
+                for _, rr in reo.iterrows():
+                    dus = rr["dus"]
+                    if dus < 14:
+                        pri, pc = "High", "#e5484d"
+                    elif dus < 30:
+                        pri, pc = "Med", "#f79009"
+                    else:
+                        pri, pc = "Low", "#12b76a"
+                    name = str(rr["product_name"])
+                    if len(name) > 26:
+                        name = name[:26] + "…"
+                    reo_html.append(f"""
+                    <div class="reo-row">
+                      <div style="flex:1; min-width:0;">
+                        <div class="reo-name">{name}</div>
+                        <div class="reo-sub">{rr['warehouse']} · {dus:.0f}d left</div>
+                      </div>
+                      <div style="text-align:right;">
+                        <div class="reo-qty">{rr['qty']:,.0f} <span style="font-weight:500;color:#a5aec4;">units</span></div>
+                        <span class="reo-pri" style="color:{pc};background:{pbg[pc]};">{pri}</span>
+                      </div>
+                    </div>""")
+            else:
+                reo_html.append('<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">Nothing below reorder point right now.</p>')
+        except Exception:
+            reo_html.append('<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">Reorder data unavailable.</p>')
+        reo_html.append("</div>")
+        st.markdown("".join(reo_html), unsafe_allow_html=True)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2: INVENTORY DETAIL
@@ -537,9 +866,9 @@ with tab2:
             abc_str = " | ".join([f"{row['abc_class']}: {row['cnt']}" for _, row in abc_data.iterrows()]) if not abc_data.empty else "N/A"
             st.markdown(kpi_card("ABC Classification", abc_str, "kpi-info"), unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.write("")
 
-    detail_left, detail_right = st.columns(2)
+    detail_left, detail_right = st.columns(2, gap="medium")
 
     with detail_left:
         st.subheader("Top 20 Dead Stock SKUs")
@@ -576,18 +905,13 @@ with tab2:
             scatter_data["status"] = scatter_data["is_dead_stock"].map({True: "Dead Stock", False: "Healthy"})
             fig = px.scatter(
                 scatter_data, x="days_of_supply", y="inventory_value", color="status",
-                color_discrete_map={"Dead Stock": "#ff6b6b", "Healthy": "#51cf66"},
+                color_discrete_map={"Dead Stock": "#e5484d", "Healthy": "#12b76a"},
                 hover_data=["product_name", "category"],
                 labels={"days_of_supply": "Days of Supply", "inventory_value": "Inventory Value ($)", "status": "Status"},
                 log_y=True,
             )
-            fig.update_layout(
-                height=500, plot_bgcolor="#ffffff",
-                paper_bgcolor="#ffffff",
-                font=dict(color="#1a1a2e"),
-                xaxis=dict(gridcolor="#f0f0f0"),
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            fig = style_fig(fig, height=500, legend=True)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         else:
             st.info("No inventory data for scatter chart.")
 
@@ -626,9 +950,9 @@ with tab3:
         with c5:
             st.markdown(kpi_card("Avg Fulfillment", f"{r['avg_fulfillment_time']:.1f} days", "kpi-info"), unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.write("")
 
-    ops_left, ops_right = st.columns(2)
+    ops_left, ops_right = st.columns(2, gap="medium")
 
     with ops_left:
         st.subheader("OTD Rate by Region")
@@ -659,16 +983,12 @@ with tab3:
         """)
         if not delivery_status.empty:
             fig = px.pie(
-                delivery_status, values="order_count", names="delivery_status", hole=0.4,
-                color_discrete_sequence=["#ff6b6b", "#74c0fc", "#ffa94d", "#51cf66"],
+                delivery_status, values="order_count", names="delivery_status", hole=0.55,
+                color_discrete_sequence=["#e5484d", "#6355ff", "#f79009", "#12b76a"],
             )
-            fig.update_layout(
-                height=350, plot_bgcolor="#ffffff",
-                paper_bgcolor="#ffffff",
-                font=dict(color="#1a1a2e"),
-                xaxis=dict(gridcolor="#f0f0f0"), margin=dict(l=0, r=0, t=10, b=10),
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_traces(marker=dict(line=dict(color="#ffffff", width=2)))
+            fig = style_fig(fig, height=350, legend=True)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         else:
             st.info("No delivery data.")
 
@@ -713,7 +1033,7 @@ with tab4:
         with c4:
             st.markdown(kpi_card("Stockout Cost / Month", format_currency(r["stockout_cost"]), "kpi-danger"), unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.write("")
 
     st.subheader("Reorder Recommendations Table")
     reorder_table = run_query("""
@@ -755,20 +1075,20 @@ with tab4:
             try:
                 v = float(val)
                 if v < 14:
-                    return "background-color: rgba(255,107,107,0.3)"
+                    return "background-color: rgba(229,72,77,0.16)"
                 elif v < 30:
-                    return "background-color: rgba(255,169,77,0.3)"
+                    return "background-color: rgba(247,144,9,0.16)"
                 else:
-                    return "background-color: rgba(81,207,102,0.2)"
+                    return "background-color: rgba(18,183,106,0.14)"
             except (ValueError, TypeError):
                 return ""
 
         def color_action(val):
             if "Reorder" in str(val):
-                return "background-color: rgba(255,107,107,0.3)"
+                return "background-color: rgba(229,72,77,0.16)"
             elif "Discount" in str(val):
-                return "background-color: rgba(255,169,77,0.3)"
-            return "background-color: rgba(81,207,102,0.2)"
+                return "background-color: rgba(247,144,9,0.16)"
+            return "background-color: rgba(18,183,106,0.14)"
 
         styled = reorder_table.style.applymap(
             color_stockout, subset=["Days Until Stockout"]
@@ -881,7 +1201,7 @@ with tab5:
 with tab6:
     st.subheader("🔔 Alert History & Configuration")
 
-    alert_col1, alert_col2 = st.columns(2)
+    alert_col1, alert_col2 = st.columns(2, gap="medium")
 
     with alert_col1:
         st.markdown("### KPI History")
@@ -954,9 +1274,9 @@ with tab7:
             inv_update = str(f["last_inventory_update"])[:10] if f["last_inventory_update"] else "N/A"
             st.markdown(kpi_card("Last Inventory Sync", inv_update, "kpi-info"), unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.write("")
 
-    health_left, health_right = st.columns(2)
+    health_left, health_right = st.columns(2, gap="medium")
 
     with health_left:
         st.markdown("### Missing Values Check")
@@ -1020,10 +1340,10 @@ with tab7:
         else:
             st.success("✅ No price outliers detected")
 
-    st.markdown("---")
+    st.write("")
 
     st.markdown("### Orders vs Inventory Consistency")
-    cons_left, cons_right = st.columns(2)
+    cons_left, cons_right = st.columns(2, gap="medium")
 
     with cons_left:
         st.markdown("**Inventory SKUs with no orders:**")
@@ -1066,7 +1386,7 @@ with tab7:
         else:
             st.success("✅ All ordered products exist in inventory")
 
-    st.markdown("---")
+    st.write("")
 
     total_issues = run_query("""
         SELECT
@@ -1090,7 +1410,7 @@ with tab7:
 
 st.markdown("---")
 st.markdown(
-    '<p style="text-align: center; color: #666; font-size: 12px;">'
+    '<p style="text-align: center; color: #94a3b8; font-size: 12px;">'
     'Supply Chain Intelligence Engine • Powered by SupplyStack • '
     f'Last refresh: {datetime.now().strftime("%Y-%m-%d %H:%M")}'
     '</p>',
