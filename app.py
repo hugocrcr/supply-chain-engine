@@ -12,6 +12,7 @@ Only presentation changed — all DB queries and AI logic are unchanged.
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
@@ -372,6 +373,108 @@ def render_table(df, formats=None, aligns=None, cell_style=None, index=False,
     )
 
 
+def _attr(s):
+    return _esc(str(s)).replace('"', "&quot;")
+
+
+def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560, wrap=None):
+    """Light HTML table with Excel-style click-to-sort column headers (arrows)."""
+    if df is None or len(df) == 0:
+        st.markdown('<div style="padding:14px;color:#94a3b8;font-size:13px;">No data.</div>', unsafe_allow_html=True)
+        return
+    formats = formats or {}
+    aligns = aligns or {}
+    cell_style = cell_style or {}
+    wrap = set(wrap or [])
+    cols = list(df.columns)
+
+    def isnum(c):
+        try:
+            return pd.api.types.is_numeric_dtype(df[c])
+        except Exception:
+            return False
+
+    def disp(c, v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return ""
+        f = formats.get(c)
+        if f is None:
+            return _esc(v)
+        try:
+            return _esc(f(v)) if callable(f) else _esc(f.format(v))
+        except Exception:
+            return _esc(v)
+
+    ths = ""
+    for j, c in enumerate(cols):
+        al = aligns.get(c, "right" if isnum(c) else "left")
+        ths += ('<th onclick="sortT(%d)" style="text-align:%s;">%s<span class="arw" id="arw%d">&#8597;</span></th>'
+                % (j, al, _esc(c), j))
+
+    trs = ""
+    for _, r in df.iterrows():
+        tds = ""
+        for c in cols:
+            v = r[c]
+            al = aligns.get(c, "right" if isnum(c) else "left")
+            if isnum(c) and not (v is None or (isinstance(v, float) and pd.isna(v))):
+                dv = _attr(float(v))
+            else:
+                dv = _attr(str(v).lower() if v is not None else "")
+            extra = ""
+            if c in cell_style:
+                try:
+                    extra = cell_style[c](v) or ""
+                except Exception:
+                    extra = ""
+            ws = "white-space:normal;word-break:break-word;" if c in wrap else "white-space:nowrap;"
+            tds += ('<td data-v="%s" style="text-align:%s;%s%s">%s</td>'
+                    % (dv, al, ws, extra, disp(c, v)))
+        trs += "<tr>%s</tr>" % tds
+
+    css = """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
+    *{box-sizing:border-box}
+    body{margin:0;font-family:'Plus Jakarta Sans',system-ui,sans-serif;background:transparent;}
+    .wrap{border:1px solid #e6e8f0;border-radius:14px;overflow:auto;max-height:%dpx;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.04);}
+    table{width:100%%;border-collapse:collapse;}
+    th{position:sticky;top:0;z-index:1;background:#f8f9fc;color:#64748b;font-weight:600;font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:11px 14px;border-bottom:1px solid #e6e8f0;cursor:pointer;user-select:none;white-space:nowrap;}
+    th:hover{color:#6355ff;background:#f1f2f8;}
+    .arw{margin-left:6px;font-size:10px;color:#94a3b8;opacity:.5;}
+    td{padding:10px 14px;border-bottom:1px solid #f1f2f8;color:#0f172a;font-size:13px;}
+    tr:nth-child(even) td{background:#fbfbfe;}
+    </style>
+    """ % int(height - 20)
+
+    script = """
+    <script>
+    function sortT(col){
+      var t=document.getElementById('st'), tb=t.tBodies[0];
+      var rows=Array.prototype.slice.call(tb.rows);
+      var cur=t.getAttribute('data-col'), dir=t.getAttribute('data-dir')||'desc';
+      if(String(col)===cur){dir=(dir==='asc')?'desc':'asc';}else{dir='desc';}
+      t.setAttribute('data-col',col); t.setAttribute('data-dir',dir);
+      rows.sort(function(a,b){
+        var x=a.cells[col].getAttribute('data-v'), y=b.cells[col].getAttribute('data-v');
+        var nx=parseFloat(x), ny=parseFloat(y), num=(!isNaN(nx)&&!isNaN(ny));
+        var c = num ? (nx-ny) : (x<y?-1:(x>y?1:0));
+        return dir==='asc'?c:-c;
+      });
+      rows.forEach(function(r){tb.appendChild(r);});
+      var all=document.getElementsByClassName('arw');
+      for(var i=0;i<all.length;i++){all[i].innerHTML='&#8597;';all[i].style.opacity=.5;all[i].style.color='#94a3b8';}
+      var a=document.getElementById('arw'+col);
+      if(a){a.innerHTML=(dir==='asc')?'&#8593;':'&#8595;';a.style.opacity=1;a.style.color='#6355ff';}
+    }
+    </script>
+    """
+
+    html = (css + '<div class="wrap"><table id="st"><thead><tr>' + ths
+            + '</tr></thead><tbody>' + trs + '</tbody></table></div>' + script)
+    components.html(html, height=height, scrolling=False)
+
+
 def alert_box(kind, text):
     palette = {
         "success": ("#e7f7ef", "#0f7a4d", "#12b76a"),
@@ -610,13 +713,18 @@ def ask_claude(user_question, conversation_history):
     max_iterations = 5
 
     for _ in range(max_iterations):
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=2000,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=messages,
-        )
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=2000,
+                system=SYSTEM_PROMPT,
+                tools=TOOLS,
+                messages=messages,
+            )
+        except Exception as e:
+            return (f"⚠️ The AI request failed: {e}\n\n"
+                    "Check that the model name in app.py is valid and that ANTHROPIC_API_KEY "
+                    "is set correctly in your Streamlit secrets."), dataframes
 
         # Check if Claude wants to use a tool
         if response.stop_reason == "tool_use":
@@ -806,7 +914,22 @@ with tab1:
     st.write("")
 
     # ── main 2:1 layout ───────────────────────────────────────────────────────
-    exec_ai_q = None
+    # AI analysis (framed, scrollable) — appears at the top when a rail button is clicked
+    if st.session_state.get("exec_ai_q"):
+        _q = st.session_state["exec_ai_q"]
+        _cache = st.session_state.get("exec_ai_cache")
+        if not _cache or _cache[0] != _q:
+            with st.spinner("Analyzing your data…"):
+                _ans, _ = ask_claude(_q, [])
+            st.session_state["exec_ai_cache"] = (_q, _ans)
+        with st.expander("✦ AI analysis", expanded=True):
+            st.markdown(st.session_state["exec_ai_cache"][1])
+            if st.button("Dismiss", key="exec_ai_dismiss"):
+                st.session_state.pop("exec_ai_q", None)
+                st.session_state.pop("exec_ai_cache", None)
+                st.rerun()
+        st.write("")
+
     main_left, main_right = st.columns([2, 1], gap="medium")
 
     with main_left:
@@ -942,10 +1065,12 @@ with tab1:
         ba, bb = st.columns(2)
         with ba:
             if st.button(ai_presets["exec_ai_plan"][0], key="exec_ai_plan", use_container_width=True):
-                exec_ai_q = ai_presets["exec_ai_plan"][1]
+                st.session_state["exec_ai_q"] = ai_presets["exec_ai_plan"][1]
+                st.rerun()
         with bb:
             if st.button(ai_presets["exec_ai_turn"][0], key="exec_ai_turn", use_container_width=True):
-                exec_ai_q = ai_presets["exec_ai_turn"][1]
+                st.session_state["exec_ai_q"] = ai_presets["exec_ai_turn"][1]
+                st.rerun()
         st.write("")
 
         # ── Recent Alerts (built from live data) ───────────────────────────
@@ -1033,19 +1158,6 @@ with tab1:
             reo_html.append('<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">Reorder data unavailable.</p>')
         reo_html.append("</div>")
         st.markdown("".join(reo_html), unsafe_allow_html=True)
-
-    # ── Full-width AI analysis output (framed, scrollable — not cramped in the rail) ─
-    if exec_ai_q:
-        with st.expander("✦ AI analysis", expanded=True):
-            with st.spinner("Analyzing your data…"):
-                try:
-                    answer, _ = ask_claude(exec_ai_q, [])
-                except Exception:
-                    answer = None
-            if answer:
-                st.markdown(answer)
-            else:
-                alert_box("info", "Add your Anthropic API key in secrets to enable live AI analysis, or use the AI Assistant tab.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1276,26 +1388,22 @@ with tab4:
             "EOQ", "MOQ", "Reorder Point", "Days Until Stockout", "Action"
         ]
 
-        fcol1, fcol2, fcol3 = st.columns([2, 1, 1])
+        fcol1, fcol2 = st.columns([3, 1])
         with fcol1:
             reo_q = st.text_input("Search product", key="reo_search",
                                   placeholder="🔍  Filter by product name…", label_visibility="collapsed")
         with fcol2:
             actions = ["All actions"] + sorted(reorder_table["Action"].dropna().unique().tolist())
             reo_act = st.selectbox("Action", actions, key="reo_action", label_visibility="collapsed")
-        with fcol3:
-            sort_opts = ["Days Until Stockout", "Current Stock", "Reorder Point", "EOQ", "Product"]
-            reo_sort = st.selectbox("Sort by", sort_opts, key="reo_sort", label_visibility="collapsed")
 
         view = reorder_table.copy()
         if reo_q:
             view = view[view["Product"].astype(str).str.contains(reo_q, case=False, na=False)]
         if reo_act != "All actions":
             view = view[view["Action"] == reo_act]
-        view = view.sort_values(reo_sort, ascending=(reo_sort == "Product"))
 
-        st.markdown(f'<div style="font-size:12px;color:#94a3b8;margin:2px 0 8px;">Showing {len(view)} of {len(reorder_table)} SKUs</div>', unsafe_allow_html=True)
-        render_table(view, index=True, height=620, wrap=["Product", "Action"], cell_style={
+        st.markdown(f'<div style="font-size:12px;color:#94a3b8;margin:2px 0 8px;">Showing {len(view)} of {len(reorder_table)} SKUs · click any column header to sort</div>', unsafe_allow_html=True)
+        sortable_table(view, height=620, wrap=["Product", "Action"], cell_style={
             "Days Until Stockout": _bg_stockout, "Action": _bg_action,
         }, formats={
             "Current Stock": "{:,.0f}", "Avg Daily Demand": "{:,.1f}", "Lead Time (days)": "{:,.0f}",
