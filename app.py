@@ -715,7 +715,7 @@ def ask_claude(user_question, conversation_history):
     for _ in range(max_iterations):
         try:
             response = client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-4-5",
                 max_tokens=2000,
                 system=SYSTEM_PROMPT,
                 tools=TOOLS,
@@ -914,22 +914,6 @@ with tab1:
     st.write("")
 
     # ── main 2:1 layout ───────────────────────────────────────────────────────
-    # AI analysis (framed, scrollable) — appears at the top when a rail button is clicked
-    if st.session_state.get("exec_ai_q"):
-        _q = st.session_state["exec_ai_q"]
-        _cache = st.session_state.get("exec_ai_cache")
-        if not _cache or _cache[0] != _q:
-            with st.spinner("Analyzing your data…"):
-                _ans, _ = ask_claude(_q, [])
-            st.session_state["exec_ai_cache"] = (_q, _ans)
-        with st.expander("✦ AI analysis", expanded=True):
-            st.markdown(st.session_state["exec_ai_cache"][1])
-            if st.button("Dismiss", key="exec_ai_dismiss"):
-                st.session_state.pop("exec_ai_q", None)
-                st.session_state.pop("exec_ai_cache", None)
-                st.rerun()
-        st.write("")
-
     main_left, main_right = st.columns([2, 1], gap="medium")
 
     with main_left:
@@ -1053,24 +1037,12 @@ with tab1:
         </div>
         """, unsafe_allow_html=True)
 
-        # Working action buttons -> run a live AI analysis inline
-        ai_presets = {
-            "exec_ai_plan": ("Draft clearance plan",
-                "Draft a dead-stock clearance plan for our highest-value categories. "
-                "Include which categories to target, suggested tactics (markdown, bundle, liquidation), "
-                "and the estimated working capital we could recover this quarter."),
-            "exec_ai_turn": ("Ask about turnover",
-                "Our inventory turnover is very low. Explain the main drivers and give 3 concrete actions to improve it."),
-        }
-        ba, bb = st.columns(2)
-        with ba:
-            if st.button(ai_presets["exec_ai_plan"][0], key="exec_ai_plan", use_container_width=True):
-                st.session_state["exec_ai_q"] = ai_presets["exec_ai_plan"][1]
-                st.rerun()
-        with bb:
-            if st.button(ai_presets["exec_ai_turn"][0], key="exec_ai_turn", use_container_width=True):
-                st.session_state["exec_ai_q"] = ai_presets["exec_ai_turn"][1]
-                st.rerun()
+        st.markdown(
+            '<div style="font-size:12px;color:#94a3b8;margin-top:2px;line-height:1.5;">'
+            '💬 Open the <b style="color:#6355ff;">AI Assistant</b> tab for a full clearance plan '
+            'or a turnover deep-dive.</div>',
+            unsafe_allow_html=True,
+        )
         st.write("")
 
         # ── Recent Alerts (built from live data) ───────────────────────────
