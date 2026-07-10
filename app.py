@@ -19,7 +19,7 @@ import psycopg2
 import re
 import json
 from psycopg2.extras import RealDictCursor
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 
@@ -264,12 +264,12 @@ def style_fig(fig, height=360, legend=False):
         height=height,
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Plus Jakarta Sans, sans-serif", color="#475569", size=12),
+        font=dict(family="Plus Jakarta Sans, sans-serif", color="#334155", size=12.5),
         margin=dict(l=0, r=12, t=10, b=34),
-        xaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6"),
-        yaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6"),
+        xaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6", tickfont=dict(color="#475569", size=12), title_font=dict(color="#64748b", size=12)),
+        yaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6", tickfont=dict(color="#334155", size=12.5), title_font=dict(color="#64748b", size=12)),
         showlegend=legend,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.22, x=0, font=dict(size=11)),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.22, x=0, font=dict(size=11.5, color="#334155")),
         hoverlabel=dict(bgcolor="#0f172a", font=dict(color="#fff", family="Plus Jakarta Sans")),
     )
     return fig
@@ -529,14 +529,55 @@ st.markdown(f"""
         <span style="font-size:22px; font-weight:800; color:#0f172a; letter-spacing:-0.02em;">Inventory Operations Dashboard</span>
     </div>
     <div style="flex:1;"></div>
-    <div style="display:flex; align-items:center; gap:8px; background:#fff; border:1px solid rgba(15,23,42,0.08);
-         border-radius:11px; padding:9px 14px; font-size:12.5px; font-weight:600; color:#475569;">
-        Last 30 days <span style="color:#a5aec4; font-size:10px;">▾</span></div>
     <div style="width:38px; height:38px; border-radius:50%;
          background:linear-gradient(135deg,#6355ff,#c084fc);
          display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#fff;">JD</div>
 </div>
 """, unsafe_allow_html=True)
+
+
+# ── GLOBAL DATE RANGE (filters order-based metrics only) ──────────────────────
+_bounds = run_query("SELECT MIN(order_date)::date AS mn, MAX(order_date)::date AS mx FROM orders")
+if not _bounds.empty and _bounds.iloc[0]["mx"] is not None:
+    DATA_MIN = pd.to_datetime(_bounds.iloc[0]["mn"]).date()
+    DATA_MAX = pd.to_datetime(_bounds.iloc[0]["mx"]).date()
+else:
+    DATA_MAX = date.today()
+    DATA_MIN = DATA_MAX - timedelta(days=365)
+
+PRESETS = {
+    "Last 30 days": 30, "Last 90 days": 90, "Last 6 months": 182,
+    "Last 12 months": 365, "All time": None, "Custom range…": "custom",
+}
+
+_sp, _tc = st.columns([3, 1])
+with _tc:
+    _choice = st.selectbox("Date range", list(PRESETS.keys()),
+                           index=list(PRESETS).index("All time"), label_visibility="collapsed")
+    if _choice == "Custom range…":
+        _r = st.date_input("Custom range", value=(DATA_MIN, DATA_MAX),
+                           min_value=DATA_MIN, max_value=DATA_MAX, label_visibility="collapsed")
+        if isinstance(_r, (list, tuple)) and len(_r) == 2:
+            START_DATE, END_DATE = _r
+        else:
+            START_DATE, END_DATE = DATA_MIN, DATA_MAX
+    elif _choice == "All time":
+        START_DATE, END_DATE = DATA_MIN, DATA_MAX
+    else:
+        END_DATE = DATA_MAX
+        START_DATE = max(DATA_MIN, DATA_MAX - timedelta(days=PRESETS[_choice]))
+
+# SQL snippet injected into order-based queries
+if _choice == "All time":
+    ORDERS_WHERE = ""
+else:
+    ORDERS_WHERE = ("WHERE order_date >= '%s' AND order_date < '%s'"
+                    % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
+
+st.caption(
+    f"📅  Order-based metrics show {START_DATE:%b %d, %Y} → {END_DATE:%b %d, %Y}  ·  "
+    "inventory levels are a live snapshot (not date-filtered)."
+)
 
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
@@ -572,14 +613,14 @@ with tab1:
     </div>
     """, unsafe_allow_html=True)
 
-    kpi_data = run_query("""
+    kpi_data = run_query(f"""
         SELECT
             COALESCE(SUM(CASE WHEN is_dead_stock THEN inventory_value ELSE 0 END), 0) AS dead_stock_value,
             COALESCE(SUM(CASE WHEN is_excess THEN excess_value ELSE 0 END), 0) AS excess_stock_value,
             COALESCE(SUM(inventory_value), 0) AS total_inventory_value,
             COALESCE(SUM(inventory_value) * 0.25 / 12, 0) AS holding_cost_monthly,
             COALESCE(
-                (SELECT SUM(o.total_amount) FROM orders o) / NULLIF(SUM(inventory_value), 0),
+                (SELECT SUM(o.total_amount) FROM orders o {ORDERS_WHERE}) / NULLIF(SUM(inventory_value), 0),
                 0
             ) AS inventory_turnover,
             COALESCE(
@@ -657,7 +698,7 @@ with tab1:
             except Exception:
                 pass
             fig.update_traces(hovertemplate="<b>%{y}</b><br>$%{x:,.0f}<extra></extra>")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
         else:
             st.info("No dead stock data available.")
 
@@ -691,7 +732,7 @@ with tab1:
                     x=0.5, y=0.5, showarrow=False,
                     font=dict(family="Plus Jakarta Sans", size=18, color="#0f172a"),
                 )
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
             else:
                 st.info("No excess stock data available.")
 
@@ -713,7 +754,7 @@ with tab1:
                     ))
                     fig = style_fig(fig, height=300)
                     fig.update_layout(yaxis=dict(range=[ymin - pad, ymax + pad], gridcolor="#eef0f6"))
-                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                    st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
                 else:
                     st.info("Not enough history yet for a trend.")
             else:
@@ -743,17 +784,41 @@ with tab1:
                   display:flex;align-items:center;justify-content:center;font-size:13px;">✦</span>
             <span style="font-size:10px; font-weight:700; letter-spacing:0.12em;">AI ASSISTANT</span>
           </div>
-          <p style="margin:0 0 15px; font-size:13.5px; font-weight:500; line-height:1.55; color:rgba(255,255,255,0.94);">{insight}</p>
-          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <span style="font-size:11.5px; font-weight:600; background:rgba(255,255,255,0.16); padding:7px 12px; border-radius:9px;">Draft clearance plan</span>
-            <span style="font-size:11.5px; font-weight:600; background:rgba(255,255,255,0.16); padding:7px 12px; border-radius:9px;">Ask about turnover</span>
-          </div>
+          <p style="margin:0; font-size:13.5px; font-weight:500; line-height:1.55; color:rgba(255,255,255,0.94);">{insight}</p>
         </div>
         """, unsafe_allow_html=True)
 
+        # Working action buttons -> run a live AI analysis inline
+        ai_presets = {
+            "exec_ai_plan": ("Draft clearance plan",
+                "Draft a dead-stock clearance plan for our highest-value categories. "
+                "Include which categories to target, suggested tactics (markdown, bundle, liquidation), "
+                "and the estimated working capital we could recover this quarter."),
+            "exec_ai_turn": ("Ask about turnover",
+                "Our inventory turnover is very low. Explain the main drivers and give 3 concrete actions to improve it."),
+        }
+        ba, bb = st.columns(2)
+        exec_ai_q = None
+        with ba:
+            if st.button(ai_presets["exec_ai_plan"][0], key="exec_ai_plan", use_container_width=True):
+                exec_ai_q = ai_presets["exec_ai_plan"][1]
+        with bb:
+            if st.button(ai_presets["exec_ai_turn"][0], key="exec_ai_turn", use_container_width=True):
+                exec_ai_q = ai_presets["exec_ai_turn"][1]
+        if exec_ai_q:
+            with st.expander("✦ AI analysis", expanded=True):
+                with st.spinner("Analyzing your data…"):
+                    try:
+                        answer, _ = ask_claude(exec_ai_q, [])
+                        st.markdown(answer)
+                    except Exception as e:
+                        st.info("Add your Anthropic API key in secrets to enable live AI analysis, "
+                                "or open the AI Assistant tab.")
+        st.write("")
+
         # ── Recent Alerts (built from live data) ───────────────────────────
         alerts_html = ['<div class="aurora-panel" style="margin-bottom:16px;">',
-                       '<div class="rail-title"><h4>Recent Alerts</h4><span>View all</span></div>']
+                       '<div class="rail-title"><h4>Recent Alerts</h4><span style="color:#94a3b8;font-weight:600;">live</span></div>']
         tint = {"#e5484d": "#fdecec", "#f79009": "#fef3e2", "#3b82f6": "#eaf1fe"}
         rows = []
         try:
@@ -795,7 +860,7 @@ with tab1:
 
         # ── Reorder Recommendations (mini) ─────────────────────────────────
         reo_html = ['<div class="aurora-panel">',
-                    '<div class="rail-title"><h4>Reorder Recommendations</h4><span>All</span></div>']
+                    '<div class="rail-title"><h4>Reorder Recommendations</h4><span style="color:#94a3b8;font-weight:600;">top 4</span></div>']
         pbg = {"#e5484d": "#fdecec", "#f79009": "#fef3e2", "#12b76a": "#e7f7ef"}
         try:
             reo = run_query("""
@@ -911,7 +976,7 @@ with tab2:
                 log_y=True,
             )
             fig = style_fig(fig, height=500, legend=True)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
         else:
             st.info("No inventory data for scatter chart.")
 
@@ -922,7 +987,7 @@ with tab2:
 
 with tab3:
 
-    ops_kpis = run_query("""
+    ops_kpis = run_query(f"""
         SELECT
             COALESCE(
                 COUNT(*) FILTER (WHERE late_delivery_risk = 0)::numeric
@@ -932,7 +997,7 @@ with tab3:
             COALESCE(STDDEV(days_for_shipping_real), 0) AS lead_time_variance,
             COALESCE(SUM(total_amount) / NULLIF(COUNT(DISTINCT order_id)::numeric, 0), 0) AS cost_per_order,
             COALESCE(AVG(days_for_shipping_real), 0) AS avg_fulfillment_time
-        FROM orders
+        FROM orders {ORDERS_WHERE}
     """)
 
     if not ops_kpis.empty:
@@ -956,14 +1021,14 @@ with tab3:
 
     with ops_left:
         st.subheader("OTD Rate by Region")
-        otd_region = run_query("""
+        otd_region = run_query(f"""
             SELECT
                 order_region,
                 COUNT(*) AS total_orders,
                 ROUND(COUNT(*) FILTER (WHERE late_delivery_risk = 0)::numeric
                     / NULLIF(COUNT(*)::numeric, 0) * 100, 1) AS otd_rate,
                 ROUND(AVG(days_for_shipping_real)::numeric, 2) AS avg_lead_time
-            FROM orders
+            FROM orders {ORDERS_WHERE}
             GROUP BY order_region
             ORDER BY total_orders DESC
         """)
@@ -975,9 +1040,9 @@ with tab3:
 
     with ops_right:
         st.subheader("Delivery Status Breakdown")
-        delivery_status = run_query("""
+        delivery_status = run_query(f"""
             SELECT delivery_status, COUNT(*) AS order_count
-            FROM orders
+            FROM orders {ORDERS_WHERE}
             GROUP BY delivery_status
             ORDER BY order_count DESC
         """)
@@ -988,7 +1053,7 @@ with tab3:
             )
             fig.update_traces(marker=dict(line=dict(color="#ffffff", width=2)))
             fig = style_fig(fig, height=350, legend=True)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
         else:
             st.info("No delivery data.")
 
