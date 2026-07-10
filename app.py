@@ -174,6 +174,26 @@ st.markdown("""
     /* hide Streamlit chrome */
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
 
+    /* ── Force LIGHT on native widgets (defensive — in case base theme is not applied) ─ */
+    [data-testid="stDataFrame"], [data-testid="stTable"] { background:#ffffff !important; }
+    div[data-baseweb="select"] > div { background:#ffffff !important; border-color:rgba(15,23,42,0.12) !important; }
+    div[data-baseweb="select"] * { color:#0f172a !important; -webkit-text-fill-color:#0f172a !important; }
+    ul[role="listbox"] { background:#ffffff !important; }
+    li[role="option"] { color:#0f172a !important; background:#ffffff !important; }
+    li[role="option"]:hover { background:#f1f2f8 !important; }
+    .stDateInput input, .stTextInput input, div[data-baseweb="input"] input {
+        background:#ffffff !important; color:#0f172a !important; -webkit-text-fill-color:#0f172a !important;
+        border-color:rgba(15,23,42,0.12) !important;
+    }
+    [data-testid="stChatMessage"] { background:#ffffff !important; border:1px solid rgba(15,23,42,0.06) !important; border-radius:14px; }
+    [data-testid="stChatMessage"] * { color:#0f172a !important; }
+    [data-testid="stExpander"] details { background:#ffffff !important; border:1px solid rgba(15,23,42,0.08) !important; border-radius:12px; }
+    [data-testid="stExpander"] summary, [data-testid="stExpander"] p, [data-testid="stExpander"] li,
+    [data-testid="stExpander"] span, [data-testid="stExpander"] strong, [data-testid="stExpander"] h1,
+    [data-testid="stExpander"] h2, [data-testid="stExpander"] h3 { color:#0f172a !important; }
+    [data-testid="stCaptionContainer"] * { color:#64748b !important; }
+    [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li { color:#0f172a; }
+
     /* ── Right-rail list styling ─────────────────────────────────────────── */
     .rail-title { display:flex; align-items:center; justify-content:space-between; margin-bottom:2px; }
     .rail-title h4 { margin:0; font-size:15px; font-weight:700; color:#0f172a; }
@@ -242,17 +262,18 @@ def sparkline_svg(series, color, w=74, h=24):
     )
 
 
-def kpi_card(label, value, card_class="", delta="", delta_color="", spark=""):
+def kpi_card(label, value, card_class="", delta="", delta_color="", spark="", small=False):
     """Aurora KPI card: status dot + label, big traffic-light value, delta + sparkline."""
     foot = ""
     if delta or spark:
         dcol = delta_color or "#64748b"
         delta_html = f'<span class="kpi-delta" style="color:{dcol}">{delta}</span>' if delta else "<span></span>"
         foot = f'<div class="kpi-foot">{delta_html}{spark}</div>'
+    vstyle = "font-size:15px;line-height:1.25;white-space:normal;word-break:break-word;" if small else ""
     return f"""
     <div class="kpi-card {card_class}">
         <div class="kpi-top"><span class="kpi-dot"></span><span class="kpi-label">{label}</span></div>
-        <div class="kpi-value">{value}</div>
+        <div class="kpi-value" style="{vstyle}">{value}</div>
         {foot}
     </div>
     """
@@ -273,6 +294,117 @@ def style_fig(fig, height=360, legend=False):
         hoverlabel=dict(bgcolor="#0f172a", font=dict(color="#fff", family="Plus Jakarta Sans")),
     )
     return fig
+
+
+def _esc(v):
+    s = "" if v is None else str(v)
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def render_table(df, formats=None, aligns=None, cell_style=None, index=False,
+                 height=None, wrap=None, zebra=True):
+    """Render a DataFrame as a light, theme-proof HTML table (Aurora styling)."""
+    if df is None or len(df) == 0:
+        st.markdown('<div style="padding:14px;color:#94a3b8;font-size:13px;">No data.</div>', unsafe_allow_html=True)
+        return
+    formats = formats or {}
+    aligns = aligns or {}
+    cell_style = cell_style or {}
+    wrap = set(wrap or [])
+    cols = list(df.columns)
+
+    def fmt(col, v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return ""
+        f = formats.get(col)
+        if f is None:
+            return _esc(v)
+        try:
+            return _esc(f(v)) if callable(f) else _esc(f.format(v))
+        except Exception:
+            return _esc(v)
+
+    def align(col):
+        if col in aligns:
+            return aligns[col]
+        try:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                return "right"
+        except Exception:
+            pass
+        return "left"
+
+    head = ""
+    if index:
+        head += ('<th style="position:sticky;top:0;z-index:1;background:#f8f9fc;color:#94a3b8;font-weight:600;'
+                 'font-size:11px;padding:11px 12px;border-bottom:1px solid #e6e8f0;text-align:right;">#</th>')
+    for c in cols:
+        head += (f'<th style="position:sticky;top:0;z-index:1;background:#f8f9fc;color:#64748b;font-weight:600;'
+                 f'font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:11px 14px;'
+                 f'border-bottom:1px solid #e6e8f0;text-align:{align(c)};white-space:nowrap;">{_esc(c)}</th>')
+
+    body = ""
+    for i, (_, r) in enumerate(df.iterrows()):
+        rbg = "#fbfbfe" if (zebra and i % 2) else "#ffffff"
+        body += "<tr>"
+        if index:
+            body += (f'<td style="padding:10px 12px;border-bottom:1px solid #f1f2f8;color:#94a3b8;'
+                     f'font-size:12px;text-align:right;background:{rbg};">{i}</td>')
+        for c in cols:
+            extra = ""
+            if c in cell_style:
+                try:
+                    extra = cell_style[c](r[c]) or ""
+                except Exception:
+                    extra = ""
+            ws = "normal;word-break:break-word;" if c in wrap else "nowrap;"
+            body += (f'<td style="padding:10px 14px;border-bottom:1px solid #f1f2f8;color:#0f172a;'
+                     f'font-size:13px;text-align:{align(c)};white-space:{ws}background:{rbg};{extra}">{fmt(c, r[c])}</td>')
+        body += "</tr>"
+
+    h = f"max-height:{height}px;" if height else ""
+    st.markdown(
+        f'<div style="border:1px solid #e6e8f0;border-radius:14px;overflow:auto;{h}background:#fff;'
+        f'box-shadow:0 1px 2px rgba(15,23,42,0.04);"><table style="width:100%;border-collapse:collapse;'
+        f"font-family:'Plus Jakarta Sans',sans-serif;\"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def alert_box(kind, text):
+    palette = {
+        "success": ("#e7f7ef", "#0f7a4d", "#12b76a"),
+        "warning": ("#fef3e2", "#a15c07", "#f79009"),
+        "error":   ("#fdecec", "#b42318", "#e5484d"),
+        "info":    ("#eaf1fe", "#1d4ed8", "#3b82f6"),
+    }
+    bg, fg, bar = palette.get(kind, palette["info"])
+    st.markdown(
+        f'<div style="background:{bg};border-left:4px solid {bar};color:{fg};'
+        f'padding:11px 15px;border-radius:10px;font-size:13px;font-weight:600;margin:4px 0;">{text}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _bg_stockout(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return ""
+    if v < 14:
+        return "background:#fdecec;color:#b42318;font-weight:700;"
+    if v < 30:
+        return "background:#fef3e2;color:#a15c07;font-weight:700;"
+    return "background:#e7f7ef;color:#0f7a4d;"
+
+
+def _bg_action(v):
+    s = str(v)
+    if "Reorder" in s:
+        return "background:#fdecec;color:#b42318;font-weight:700;"
+    if "Discount" in s:
+        return "background:#fef3e2;color:#a15c07;font-weight:700;"
+    return "background:#e7f7ef;color:#0f7a4d;"
 
 
 @st.cache_data(ttl=300)
@@ -574,9 +706,11 @@ else:
     ORDERS_WHERE = ("WHERE order_date >= '%s' AND order_date < '%s'"
                     % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
 
-st.caption(
-    f"📅  Order-based metrics show {START_DATE:%b %d, %Y} → {END_DATE:%b %d, %Y}  ·  "
-    "inventory levels are a live snapshot (not date-filtered)."
+st.markdown(
+    f'<div style="margin:2px 0 8px;font-size:12.5px;font-weight:500;color:#64748b;">'
+    f'📅&nbsp; Order-based metrics show <b style="color:#334155;">{START_DATE:%b %d, %Y} → {END_DATE:%b %d, %Y}</b>'
+    f'&nbsp;·&nbsp; inventory levels are a live snapshot (not date-filtered).</div>',
+    unsafe_allow_html=True,
 )
 
 
@@ -946,17 +1080,12 @@ with tab2:
         """)
         if not top_dead.empty:
             top_dead.columns = ["Product", "Stock", "Unit Cost", "Inventory Value", "Days of Supply"]
-            st.dataframe(
-                top_dead.style.format({
-                    "Unit Cost": "${:,.2f}",
-                    "Inventory Value": "${:,.0f}",
-                    "Stock": "{:,.0f}",
-                    "Days of Supply": "{:,.0f}",
-                }),
-                use_container_width=True, height=500,
-            )
+            render_table(top_dead, index=True, height=520, wrap=["Product"], formats={
+                "Stock": "{:,.0f}", "Unit Cost": "${:,.2f}",
+                "Inventory Value": "${:,.0f}", "Days of Supply": "{:,.0f}",
+            })
         else:
-            st.info("No dead stock data.")
+            alert_box("info", "No dead stock data.")
 
     with detail_right:
         st.subheader("Days of Supply Distribution")
@@ -1034,9 +1163,11 @@ with tab3:
         """)
         if not otd_region.empty:
             otd_region.columns = ["Region", "Total Orders", "OTD Rate %", "Avg Lead Time"]
-            st.dataframe(otd_region, use_container_width=True, height=350)
+            render_table(otd_region, index=True, height=380, formats={
+                "Total Orders": "{:,.0f}", "OTD Rate %": "{:.1f}", "Avg Lead Time": "{:.2f}",
+            })
         else:
-            st.info("No orders data.")
+            alert_box("info", "No orders data.")
 
     with ops_right:
         st.subheader("Delivery Status Breakdown")
@@ -1091,10 +1222,8 @@ with tab4:
         with c2:
             st.markdown(kpi_card("Most Urgent Stockout", f"{r['most_urgent_days']:.0f} days", "kpi-danger"), unsafe_allow_html=True)
         with c3:
-            sku_name = r["most_urgent_sku"] or "N/A"
-            if len(str(sku_name)) > 25:
-                sku_name = str(sku_name)[:25] + "..."
-            st.markdown(kpi_card("Most Urgent SKU", sku_name, "kpi-warning"), unsafe_allow_html=True)
+            sku_name = _esc(r["most_urgent_sku"] or "N/A")
+            st.markdown(kpi_card("Most Urgent SKU", sku_name, "kpi-warning", small=True), unsafe_allow_html=True)
         with c4:
             st.markdown(kpi_card("Stockout Cost / Month", format_currency(r["stockout_cost"]), "kpi-danger"), unsafe_allow_html=True)
 
@@ -1136,42 +1265,14 @@ with tab4:
             "EOQ", "MOQ", "Reorder Point", "Days Until Stockout", "Action"
         ]
 
-        def color_stockout(val):
-            try:
-                v = float(val)
-                if v < 14:
-                    return "background-color: rgba(229,72,77,0.16)"
-                elif v < 30:
-                    return "background-color: rgba(247,144,9,0.16)"
-                else:
-                    return "background-color: rgba(18,183,106,0.14)"
-            except (ValueError, TypeError):
-                return ""
-
-        def color_action(val):
-            if "Reorder" in str(val):
-                return "background-color: rgba(229,72,77,0.16)"
-            elif "Discount" in str(val):
-                return "background-color: rgba(247,144,9,0.16)"
-            return "background-color: rgba(18,183,106,0.14)"
-
-        styled = reorder_table.style.applymap(
-            color_stockout, subset=["Days Until Stockout"]
-        ).applymap(
-            color_action, subset=["Action"]
-        ).format({
-            "Current Stock": "{:,.0f}",
-            "Avg Daily Demand": "{:,.1f}",
-            "Lead Time (days)": "{:,.0f}",
-            "EOQ": "{:,.0f}",
-            "MOQ": "{:,.0f}",
-            "Reorder Point": "{:,.0f}",
-            "Days Until Stockout": "{:,.0f}",
+        render_table(reorder_table, index=True, height=620, wrap=["Product", "Action"], cell_style={
+            "Days Until Stockout": _bg_stockout, "Action": _bg_action,
+        }, formats={
+            "Current Stock": "{:,.0f}", "Avg Daily Demand": "{:,.1f}", "Lead Time (days)": "{:,.0f}",
+            "EOQ": "{:,.0f}", "MOQ": "{:,.0f}", "Reorder Point": "{:,.0f}", "Days Until Stockout": "{:,.0f}",
         })
-
-        st.dataframe(styled, use_container_width=True, height=600)
     else:
-        st.info("No reorder data available.")
+        alert_box("info", "No reorder data available.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1183,7 +1284,7 @@ with tab5:
     st.caption("Ask questions about your inventory, orders, and operations in plain English. The AI queries your live data and gives specific recommendations.")
 
     # Suggested questions
-    st.markdown("**Try asking:**")
+    st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 8px;">Try asking</div>', unsafe_allow_html=True)
     suggestion_cols = st.columns(4)
     suggestions = [
         "What's our dead stock value by category?",
@@ -1213,7 +1314,7 @@ with tab5:
             for sql, df in msg.get("dataframes", []):
                 with st.expander("📊 View data"):
                     st.code(sql, language="sql")
-                    st.dataframe(df, use_container_width=True)
+                    render_table(df, index=True, height=300)
 
     # Chat input
     user_input = st.text_input("Ask a question about your supply chain data...", key="ai_input")
@@ -1246,7 +1347,7 @@ with tab5:
             for sql, df in dataframes:
                 with st.expander("📊 View data"):
                     st.code(sql, language="sql")
-                    st.dataframe(df, use_container_width=True)
+                    render_table(df, index=True, height=300)
 
         # Save to history
         st.session_state.ai_messages.append({"role": "user", "display": question, "dataframes": []})
@@ -1282,32 +1383,25 @@ with tab6:
         if not daily_kpis.empty:
             daily_kpis.columns = ["Date", "Dead Stock", "Excess Stock",
                                    "Total Inventory", "Stockout Cost", "OTD Rate"]
-            st.dataframe(
-                daily_kpis.style.format({
-                    "Dead Stock": "${:,.0f}",
-                    "Excess Stock": "${:,.0f}",
-                    "Total Inventory": "${:,.0f}",
-                    "Stockout Cost": "${:,.0f}",
-                    "OTD Rate": "{:.1f}%",
-                }),
-                use_container_width=True,
-            )
+            daily_kpis["Date"] = daily_kpis["Date"].astype(str)
+            render_table(daily_kpis, index=True, height=460, formats={
+                "Dead Stock": "${:,.0f}", "Excess Stock": "${:,.0f}", "Total Inventory": "${:,.0f}",
+                "Stockout Cost": "${:,.0f}", "OTD Rate": "{:.1f}%",
+            })
         else:
-            st.info("No KPI history yet. Run the n8n pipeline to start populating daily KPIs.")
+            alert_box("info", "No KPI history yet. Run the n8n pipeline to start populating daily KPIs.")
 
     with alert_col2:
         st.markdown("### Alert Thresholds")
-        st.markdown("Current alert configuration (editable in n8n workflow):")
-
-        st.markdown("""
-        | Alert Type | Threshold | Status |
-        |---|---|---|
-        | Dead Stock | inventory_value > $5,000 | ✅ Active |
-        | Excess Stock | excess_value > $5,000 | ✅ Active |
-        | Stockout Risk | days_until_stockout < 14 | ✅ Active |
-        | Weekly Brief | Every Monday 8am | 🔧 In progress |
-        | AI Narrative Alerts | Per-SKU recommendations | 🔧 In progress |
-        """)
+        st.markdown('<div style="font-size:13px;color:#64748b;margin-bottom:8px;">Current alert configuration (editable in the n8n workflow).</div>', unsafe_allow_html=True)
+        thresholds = pd.DataFrame([
+            ["Dead Stock", "inventory_value > $5,000", "🟢 Active"],
+            ["Excess Stock", "excess_value > $5,000", "🟢 Active"],
+            ["Stockout Risk", "days_until_stockout < 14", "🟢 Active"],
+            ["Weekly Brief", "Every Monday 8am", "🛠 In progress"],
+            ["AI Narrative Alerts", "Per-SKU recommendations", "🛠 In progress"],
+        ], columns=["Alert Type", "Threshold", "Status"])
+        render_table(thresholds, wrap=["Threshold"])
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7: DATA HEALTH
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1369,7 +1463,7 @@ with tab7:
 
         if not missing.empty:
             missing.columns = ["Field", "Missing", "Total"]
-            st.dataframe(missing, use_container_width=True)
+            render_table(missing, wrap=["Field"], formats={"Missing": "{:,.0f}", "Total": "{:,.0f}"})
 
     with health_right:
         st.markdown("### Duplicates & Outliers")
@@ -1381,11 +1475,11 @@ with tab7:
         """)
 
         if not dupes.empty:
-            st.markdown("**Duplicate SKUs:**")
+            st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 6px;">Duplicate SKUs</div>', unsafe_allow_html=True)
             dupes.columns = ["Product Name", "Count"]
-            st.dataframe(dupes, use_container_width=True)
+            render_table(dupes, wrap=["Product Name"], formats={"Count": "{:,.0f}"})
         else:
-            st.success("✅ No duplicate SKUs found")
+            alert_box("success", "✅ No duplicate SKUs found")
 
         outliers = run_query("""
             SELECT product_name, unit_cost
@@ -1396,14 +1490,11 @@ with tab7:
         """)
 
         if not outliers.empty:
-            st.markdown("**Price Outliers (5x+ above average):**")
+            st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:14px 0 6px;">Price Outliers (5x+ above average)</div>', unsafe_allow_html=True)
             outliers.columns = ["Product", "Unit Cost"]
-            st.dataframe(
-                outliers.style.format({"Unit Cost": "${:,.2f}"}),
-                use_container_width=True,
-            )
+            render_table(outliers, wrap=["Product"], formats={"Unit Cost": "${:,.2f}"})
         else:
-            st.success("✅ No price outliers detected")
+            alert_box("success", "✅ No price outliers detected")
 
     st.write("")
 
@@ -1411,7 +1502,7 @@ with tab7:
     cons_left, cons_right = st.columns(2, gap="medium")
 
     with cons_left:
-        st.markdown("**Inventory SKUs with no orders:**")
+        st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 8px;">Inventory SKUs with no orders</div>', unsafe_allow_html=True)
         no_orders = run_query("""
             SELECT i.product_name, i.current_stock, i.inventory_value
             FROM inventory i
@@ -1422,16 +1513,13 @@ with tab7:
 
         if not no_orders.empty:
             no_orders.columns = ["Product", "Stock", "Value"]
-            st.dataframe(
-                no_orders.style.format({"Value": "${:,.0f}", "Stock": "{:,.0f}"}),
-                use_container_width=True,
-            )
-            st.warning(f"⚠️ {len(no_orders)} SKUs have inventory but zero order history")
+            render_table(no_orders, index=True, height=380, wrap=["Product"], formats={"Stock": "{:,.0f}", "Value": "${:,.0f}"})
+            alert_box("warning", f"⚠️ {len(no_orders)} SKUs have inventory but zero order history")
         else:
-            st.success("✅ All inventory SKUs have matching orders")
+            alert_box("success", "✅ All inventory SKUs have matching orders")
 
     with cons_right:
-        st.markdown("**Orders for products not in inventory:**")
+        st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 8px;">Orders for products not in inventory</div>', unsafe_allow_html=True)
         no_inv = run_query("""
             SELECT o.product_name, COUNT(*) AS orders, SUM(o.total_amount) AS revenue
             FROM orders o
@@ -1443,13 +1531,10 @@ with tab7:
 
         if not no_inv.empty:
             no_inv.columns = ["Product", "Orders", "Revenue"]
-            st.dataframe(
-                no_inv.style.format({"Revenue": "${:,.0f}"}),
-                use_container_width=True,
-            )
-            st.warning(f"⚠️ {len(no_inv)} products have orders but no inventory record")
+            render_table(no_inv, index=True, height=380, wrap=["Product"], formats={"Orders": "{:,.0f}", "Revenue": "${:,.0f}"})
+            alert_box("warning", f"⚠️ {len(no_inv)} products have orders but no inventory record")
         else:
-            st.success("✅ All ordered products exist in inventory")
+            alert_box("success", "✅ All ordered products exist in inventory")
 
     st.write("")
 
@@ -1465,11 +1550,11 @@ with tab7:
     if not total_issues.empty:
         issues = int(total_issues.iloc[0]["total_issues"])
         if issues == 0:
-            st.success("✅ **EXCELLENT** — No data quality issues detected.")
+            alert_box("success", "<b>EXCELLENT</b> — no data quality issues detected.")
         elif issues <= 5:
-            st.warning(f"⚠️ **GOOD** — {issues} minor issues detected. Review above.")
+            alert_box("warning", f"<b>GOOD</b> — {issues} minor issue(s) detected. Review above.")
         else:
-            st.error(f"🔴 **NEEDS ATTENTION** — {issues} issues found. Clean before trusting metrics.")
+            alert_box("error", f"<b>NEEDS ATTENTION</b> — {issues} issues found. Clean before trusting metrics.")
 
 # ── FOOTER ────────────────────────────────────────────────────────────────────
 
