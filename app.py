@@ -191,6 +191,7 @@ st.markdown("""
     [data-testid="stExpander"] summary, [data-testid="stExpander"] p, [data-testid="stExpander"] li,
     [data-testid="stExpander"] span, [data-testid="stExpander"] strong, [data-testid="stExpander"] h1,
     [data-testid="stExpander"] h2, [data-testid="stExpander"] h3 { color:#0f172a !important; }
+    [data-testid="stExpanderDetails"], .streamlit-expanderContent { max-height:440px; overflow:auto; }
     [data-testid="stCaptionContainer"] * { color:#64748b !important; }
     [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li { color:#0f172a; }
 
@@ -805,6 +806,7 @@ with tab1:
     st.write("")
 
     # ── main 2:1 layout ───────────────────────────────────────────────────────
+    exec_ai_q = None
     main_left, main_right = st.columns([2, 1], gap="medium")
 
     with main_left:
@@ -871,28 +873,34 @@ with tab1:
                 st.info("No excess stock data available.")
 
         with sub_r:
-            # Total Inventory trend — area
-            st.subheader("Total Inventory Trend")
-            if hist is not None and not hist.empty and "total_inventory_value" in hist.columns:
-                tv = hist.dropna(subset=["total_inventory_value"])
-                if len(tv) >= 2:
-                    ymin = tv["total_inventory_value"].min()
-                    ymax = tv["total_inventory_value"].max()
-                    pad = (ymax - ymin) * 0.15 or ymax * 0.02
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=tv["kpi_date"], y=tv["total_inventory_value"],
-                        mode="lines", line=dict(color="#6355ff", width=2.5, shape="spline"),
-                        fill="tozeroy", fillcolor="rgba(99,85,255,0.14)",
-                        hovertemplate="%{x|%b %d}<br>$%{y:,.0f}<extra></extra>",
-                    ))
-                    fig = style_fig(fig, height=300)
-                    fig.update_layout(yaxis=dict(range=[ymin - pad, ymax + pad], gridcolor="#eef0f6"))
-                    st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+                st.subheader("Total Inventory Trend")
+                if hist is not None and not hist.empty and "total_inventory_value" in hist.columns:
+                    tv = hist.dropna(subset=["total_inventory_value"])
+                    if len(tv) >= 2:
+                        ymin = tv["total_inventory_value"].min()
+                        ymax = tv["total_inventory_value"].max()
+                        pad = (ymax - ymin) * 0.15 or ymax * 0.02
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=tv["kpi_date"], y=tv["total_inventory_value"],
+                            mode="lines+markers", line=dict(color="#6355ff", width=2.5),
+                            marker=dict(size=6, color="#6355ff"),
+                            fill="tozeroy", fillcolor="rgba(99,85,255,0.12)",
+                            hovertemplate="%{x|%b %d, %Y}<br>$%{y:,.0f}<extra></extra>",
+                        ))
+                        fig = style_fig(fig, height=280)
+                        fig.update_layout(yaxis=dict(range=[max(0, ymin - pad), ymax + pad], gridcolor="#eef0f6"))
+                        st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+                        st.markdown(
+                            '<div style="font-size:11px;color:#94a3b8;margin-top:-4px;">'
+                            'Source: <b>daily_kpis.total_inventory_value</b> — one point per daily snapshot. '
+                            'Early low values reflect pipeline backfill, not a real decline.</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        alert_box("info", "Not enough history yet for a trend.")
                 else:
-                    st.info("Not enough history yet for a trend.")
-            else:
-                st.info("Run the daily KPI pipeline to populate the trend.")
+                    alert_box("info", "Run the daily KPI pipeline to populate the trend.")
 
     with main_right:
         # ── AI Insight card (data-driven) ──────────────────────────────────
@@ -932,22 +940,12 @@ with tab1:
                 "Our inventory turnover is very low. Explain the main drivers and give 3 concrete actions to improve it."),
         }
         ba, bb = st.columns(2)
-        exec_ai_q = None
         with ba:
             if st.button(ai_presets["exec_ai_plan"][0], key="exec_ai_plan", use_container_width=True):
                 exec_ai_q = ai_presets["exec_ai_plan"][1]
         with bb:
             if st.button(ai_presets["exec_ai_turn"][0], key="exec_ai_turn", use_container_width=True):
                 exec_ai_q = ai_presets["exec_ai_turn"][1]
-        if exec_ai_q:
-            with st.expander("✦ AI analysis", expanded=True):
-                with st.spinner("Analyzing your data…"):
-                    try:
-                        answer, _ = ask_claude(exec_ai_q, [])
-                        st.markdown(answer)
-                    except Exception as e:
-                        st.info("Add your Anthropic API key in secrets to enable live AI analysis, "
-                                "or open the AI Assistant tab.")
         st.write("")
 
         # ── Recent Alerts (built from live data) ───────────────────────────
@@ -1035,6 +1033,19 @@ with tab1:
             reo_html.append('<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">Reorder data unavailable.</p>')
         reo_html.append("</div>")
         st.markdown("".join(reo_html), unsafe_allow_html=True)
+
+    # ── Full-width AI analysis output (framed, scrollable — not cramped in the rail) ─
+    if exec_ai_q:
+        with st.expander("✦ AI analysis", expanded=True):
+            with st.spinner("Analyzing your data…"):
+                try:
+                    answer, _ = ask_claude(exec_ai_q, [])
+                except Exception:
+                    answer = None
+            if answer:
+                st.markdown(answer)
+            else:
+                alert_box("info", "Add your Anthropic API key in secrets to enable live AI analysis, or use the AI Assistant tab.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1265,7 +1276,26 @@ with tab4:
             "EOQ", "MOQ", "Reorder Point", "Days Until Stockout", "Action"
         ]
 
-        render_table(reorder_table, index=True, height=620, wrap=["Product", "Action"], cell_style={
+        fcol1, fcol2, fcol3 = st.columns([2, 1, 1])
+        with fcol1:
+            reo_q = st.text_input("Search product", key="reo_search",
+                                  placeholder="🔍  Filter by product name…", label_visibility="collapsed")
+        with fcol2:
+            actions = ["All actions"] + sorted(reorder_table["Action"].dropna().unique().tolist())
+            reo_act = st.selectbox("Action", actions, key="reo_action", label_visibility="collapsed")
+        with fcol3:
+            sort_opts = ["Days Until Stockout", "Current Stock", "Reorder Point", "EOQ", "Product"]
+            reo_sort = st.selectbox("Sort by", sort_opts, key="reo_sort", label_visibility="collapsed")
+
+        view = reorder_table.copy()
+        if reo_q:
+            view = view[view["Product"].astype(str).str.contains(reo_q, case=False, na=False)]
+        if reo_act != "All actions":
+            view = view[view["Action"] == reo_act]
+        view = view.sort_values(reo_sort, ascending=(reo_sort == "Product"))
+
+        st.markdown(f'<div style="font-size:12px;color:#94a3b8;margin:2px 0 8px;">Showing {len(view)} of {len(reorder_table)} SKUs</div>', unsafe_allow_html=True)
+        render_table(view, index=True, height=620, wrap=["Product", "Action"], cell_style={
             "Days Until Stockout": _bg_stockout, "Action": _bg_action,
         }, formats={
             "Current Stock": "{:,.0f}", "Avg Daily Demand": "{:,.1f}", "Lead Time (days)": "{:,.0f}",
@@ -1283,6 +1313,11 @@ with tab5:
     st.subheader("🤖 AI Supply Chain Analyst")
     st.caption("Ask questions about your inventory, orders, and operations in plain English. The AI queries your live data and gives specific recommendations.")
 
+    if "ai_messages" not in st.session_state:
+        st.session_state.ai_messages = []
+    if "pending_question" not in st.session_state:
+        st.session_state.pending_question = None
+
     # Suggested questions
     st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 8px;">Try asking</div>', unsafe_allow_html=True)
     suggestion_cols = st.columns(4)
@@ -1292,68 +1327,50 @@ with tab5:
         "What should I reorder first?",
         "Where is cash trapped in my warehouses?",
     ]
-
-    # Initialize chat history
-    if "ai_messages" not in st.session_state:
-        st.session_state.ai_messages = []
-    if "pending_question" not in st.session_state:
-        st.session_state.pending_question = None
-
     for i, sug in enumerate(suggestions):
         with suggestion_cols[i]:
             if st.button(sug, key=f"sug_{i}", use_container_width=True):
                 st.session_state.pending_question = sug
+                st.rerun()
 
-    st.markdown("---")
+    if st.session_state.ai_messages:
+        st.markdown("---")
 
-    # Display chat history
+    # Conversation history — grows downward; the input stays just beneath it
     for msg in st.session_state.ai_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["display"])
-            # Show any dataframes attached to this message
-            for sql, df in msg.get("dataframes", []):
+            for _sql, df in msg.get("dataframes", []):
                 with st.expander("📊 View data"):
-                    st.code(sql, language="sql")
                     render_table(df, index=True, height=300)
 
-    # Chat input
-    user_input = st.text_input("Ask a question about your supply chain data...", key="ai_input")
+    # Input pinned below the conversation (clears on submit)
+    with st.form("ai_form", clear_on_submit=True):
+        col_in, col_btn = st.columns([6, 1])
+        with col_in:
+            user_input = st.text_input(
+                "Ask a question about your supply chain data…",
+                key="ai_input", label_visibility="collapsed",
+                placeholder="Ask a question about your supply chain data…",
+            )
+        with col_btn:
+            submitted = st.form_submit_button("Send", use_container_width=True)
 
-    # Handle either typed input or suggestion button
     question = None
     if st.session_state.pending_question:
         question = st.session_state.pending_question
         st.session_state.pending_question = None
-    elif user_input and user_input != st.session_state.get("last_question", ""):
+    elif submitted and user_input:
         question = user_input
-        st.session_state.last_question = user_input
 
     if question:
-        # Display user message
-        with st.chat_message("user"):
-            st.markdown(question)
-
-        # Build conversation history for Claude (text only)
-        history = [
-            {"role": m["role"], "content": m["display"]}
-            for m in st.session_state.ai_messages
-        ]
-
-        # Get Claude's answer
-        with st.chat_message("assistant"):
-            with st.spinner("Analyzing your data..."):
-                answer, dataframes = ask_claude(question, history)
-            st.markdown(answer)
-            for sql, df in dataframes:
-                with st.expander("📊 View data"):
-                    st.code(sql, language="sql")
-                    render_table(df, index=True, height=300)
-
-        # Save to history
+        history = [{"role": m["role"], "content": m["display"]} for m in st.session_state.ai_messages]
+        with st.spinner("Analyzing your data…"):
+            answer, dataframes = ask_claude(question, history)
         st.session_state.ai_messages.append({"role": "user", "display": question, "dataframes": []})
         st.session_state.ai_messages.append({"role": "assistant", "display": answer, "dataframes": dataframes})
+        st.rerun()
 
-    # Clear chat button
     if st.session_state.ai_messages:
         if st.button("🗑️ Clear conversation"):
             st.session_state.ai_messages = []
