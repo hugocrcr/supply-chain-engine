@@ -722,7 +722,7 @@ def ask_claude(user_question, conversation_history):
     for _ in range(max_iterations):
         try:
             response = client.messages.create(
-                model="claude-sonnet-4-5",
+                model="claude-sonnet-4-6",
                 max_tokens=2000,
                 system=SYSTEM_PROMPT,
                 tools=TOOLS,
@@ -1412,7 +1412,7 @@ with tab5:
                 try:
                     import anthropic as _an
                     _c = _an.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=15.0, max_retries=0)
-                    _r = _c.messages.create(model="claude-sonnet-4-5", max_tokens=20,
+                    _r = _c.messages.create(model="claude-sonnet-4-6", max_tokens=20,
                                             messages=[{"role": "user", "content": "Reply with exactly: OK"}])
                     alert_box("success", "✅ API key and model work — response: " + _esc(_r.content[0].text))
                 except Exception as e:
