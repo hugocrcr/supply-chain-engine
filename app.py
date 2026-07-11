@@ -44,7 +44,8 @@ DB_CONFIG = {
     "options": "-c statement_timeout=25000",
 }
 
-ANTHROPIC_API_KEY = st.secrets.get("anthropic_api_key", "")
+ANTHROPIC_API_KEY = (st.secrets.get("anthropic_api_key", "")
+                     or st.secrets.get("ANTHROPIC_API_KEY", ""))
 
 
 # ── SUPABASE CONNECTION ───────────────────────────────────────────────────────
@@ -1488,7 +1489,7 @@ with tab5:
 with tab6:
     st.subheader("🔔 Alert History & Configuration")
 
-    alert_col1, alert_col2 = st.columns(2, gap="medium")
+    alert_col1, alert_col2 = st.container(), st.container()
 
     with alert_col1:
         st.markdown("### KPI History")
