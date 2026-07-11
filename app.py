@@ -1608,12 +1608,20 @@ with tab5:
     elif submitted and user_input:
         question = user_input
  
+    # ── Step 1: capture new question, add to state, rerun ─────────────
     if question:
-        # User question renders instantly
-        with st.chat_message("user"):
-            st.markdown(question)
- 
-        # Streaming placeholder — starts as loading dots, becomes streamed text
+        st.session_state.ai_messages.append({
+            "role": "user", "display": question, "dataframes": []
+        })
+        st.session_state._processing_question = question
+        st.rerun()
+
+    # ── Step 2: on the following run, stream the answer ───────────────
+    if st.session_state.get("_processing_question"):
+        pending_q = st.session_state._processing_question
+        # Clear the flag NOW so a rerun during streaming can't retrigger
+        st.session_state._processing_question = None
+
         with st.chat_message("assistant"):
             text_placeholder = st.empty()
             text_placeholder.markdown("""
@@ -1624,10 +1632,8 @@ with tab5:
               <span style="color:#6355ff; font-weight:600; font-size:14px;">Thinking…</span>
             </div>
             <style>
-              .dot {
-                width: 8px; height: 8px; border-radius: 50%; background: #6355ff;
-                animation: bounce 1.4s infinite ease-in-out both;
-              }
+              .dot { width: 8px; height: 8px; border-radius: 50%; background: #6355ff;
+                     animation: bounce 1.4s infinite ease-in-out both; }
               .dot:nth-child(1) { animation-delay: -0.32s; }
               .dot:nth-child(2) { animation-delay: -0.16s; }
               @keyframes bounce {
@@ -1636,22 +1642,26 @@ with tab5:
               }
             </style>
             """, unsafe_allow_html=True)
- 
-            history = [{"role": m["role"], "content": m["display"]}
-                       for m in st.session_state.ai_messages]
- 
-            # Stream directly into the placeholder — user sees text appear live
-            answer, dataframes = ask_claude(question, history, text_placeholder=text_placeholder)
- 
-            # Render dataframes AFTER the streamed answer
+
+            # Build history EXCLUDING the last user msg (which is pending_q itself)
+            history = [
+                {"role": m["role"], "content": m["display"]}
+                for m in st.session_state.ai_messages[:-1]
+            ]
+
+            answer, dataframes = ask_claude(
+                pending_q, history, text_placeholder=text_placeholder
+            )
+
             for _sql, df in dataframes:
                 with st.expander("📊 View data"):
                     render_table(df, index=True, height=300)
- 
-        st.session_state.ai_messages.append({"role": "user", "display": question, "dataframes": []})
-        st.session_state.ai_messages.append({"role": "assistant", "display": answer, "dataframes": dataframes})
+
+        st.session_state.ai_messages.append({
+            "role": "assistant", "display": answer, "dataframes": dataframes
+        })
         st.rerun()
- 
+
     if st.session_state.ai_messages:
         if st.button("🗑️ Clear conversation"):
             st.session_state.ai_messages = []
