@@ -74,8 +74,17 @@ def run_query(query):
 
 def run_query_uncached(query):
     """Execute a SQL query without caching (used by AI assistant)."""
-    conn = get_connection()
     try:
+        conn = get_connection()
+        # Test that connection is actually alive
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        df = pd.read_sql(query, conn)
+        return df
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        # Connection is dead — clear cache and retry once
+        st.cache_resource.clear()
+        conn = get_connection()
         df = pd.read_sql(query, conn)
         return df
     except Exception as e:
@@ -722,7 +731,7 @@ def ask_claude(user_question, conversation_history):
     for _ in range(max_iterations):
         try:
             response = client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-5",
                 max_tokens=2000,
                 system=SYSTEM_PROMPT,
                 tools=TOOLS,
@@ -1412,7 +1421,7 @@ with tab5:
                 try:
                     import anthropic as _an
                     _c = _an.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=15.0, max_retries=0)
-                    _r = _c.messages.create(model="claude-sonnet-4-6", max_tokens=20,
+                    _r = _c.messages.create(model="claude-sonnet-5", max_tokens=20,
                                             messages=[{"role": "user", "content": "Reply with exactly: OK"}])
                     alert_box("success", "✅ API key and model work — response: " + _esc(_r.content[0].text))
                 except Exception as e:
@@ -1469,10 +1478,14 @@ with tab5:
         question = user_input
 
     if question:
-        history = [{"role": m["role"], "content": m["display"]} for m in st.session_state.ai_messages]
-        with st.spinner("Analyzing your data…"):
-            answer, dataframes = ask_claude(question, history)
+    # Immediately show the user's question so they know it registered
         st.session_state.ai_messages.append({"role": "user", "display": question, "dataframes": []})
+        with st.chat_message("user"):
+            st.markdown(question)
+        with st.chat_message("assistant"):
+            with st.spinner("Querying your database and analyzing… this can take 20–40 seconds"):
+                history = [{"role": m["role"], "content": m["display"]} for m in st.session_state.ai_messages[:-1]]
+                answer, dataframes = ask_claude(question, history)
         st.session_state.ai_messages.append({"role": "assistant", "display": answer, "dataframes": dataframes})
         st.rerun()
 
