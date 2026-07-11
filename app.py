@@ -41,7 +41,7 @@ DB_CONFIG = {
     "user": "postgres.wnwuaeuifcdxncdbhjrj",
     "password": st.secrets["supabase_password"],
     "sslmode": "require", "connect_timeout": 15,
-    "options": "-c statement_timeout=25000",
+    "options": "-c statement_timeout=8000",
 }
 
 ANTHROPIC_API_KEY = (st.secrets.get("anthropic_api_key", "")
@@ -748,84 +748,129 @@ def execute_tool_call(sql):
         return f"ERROR executing query: {str(e)}", None
 
 
-def _create_with_fallback(client, messages, system_prompt, tools):
-    """Try primary model, fall back to newer/lighter models on overload."""
-    import anthropic
-    fallback_chain = [
-        "claude-sonnet-4-6",           # your current default
-        "claude-sonnet-5",             # newer, often different capacity pool
-        "claude-haiku-4-5-20251001",   # last resort — fast, cheap, usually available
-    ]
-    last_error = None
-    for model in fallback_chain:
-        try:
-            response = client.messages.create(
-                model=model,
-                max_tokens=2000,
-                system=system_prompt,
-                tools=tools,
-                messages=messages,
-            )
-            return response, model
-        except anthropic.APIStatusError as e:
-            last_error = e
-            # 529 overloaded, 429 rate limited → try the next model
-            if e.status_code in (429, 529):
-                continue
-            # any other API error is a real problem — bubble up
-            raise
-    # exhausted all models
-    raise last_error
 
-
-def ask_claude(user_question, conversation_history):
-    """Send question to Claude with tool calling. Returns (answer_text, list_of_dataframes)."""
+def _format_api_error(e):
+    """Format an anthropic APIStatusError for user display."""
+    if e.status_code == 529:
+        return ("⚠️ Anthropic's servers are currently overloaded. "
+                "Please try again in a minute.")
+    if e.status_code == 429:
+        return "⚠️ Rate limit hit. Wait a few seconds and try again."
+    if e.status_code == 401:
+        return "⚠️ API key rejected. Check your `anthropic_api_key` in Streamlit secrets."
+    return f"⚠️ AI request failed ({e.status_code}): {getattr(e, 'message', str(e))}"
+ 
+ 
+def ask_claude(user_question, conversation_history, text_placeholder=None):
+    """Send question to Claude with streaming + tool calling.
+    
+    If text_placeholder is provided, streams text into it in real-time.
+    Returns (final_answer_text, list_of_(sql, dataframe) tuples).
+    """
     try:
         import anthropic
     except ImportError:
-        return "The 'anthropic' package is not installed. Run: pip install anthropic", []
-
+        msg = "The 'anthropic' package is not installed. Run: pip install anthropic>=0.40"
+        if text_placeholder is not None:
+            text_placeholder.markdown(msg)
+        return msg, []
+ 
     if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY == "YOUR_ANTHROPIC_API_KEY_HERE":
-        return ("⚠️ Anthropic API key not configured. In Streamlit Cloud go to "
-                "Manage app → Settings → Secrets and add a line: "
-                "anthropic_api_key = \"sk-ant-...\""), []
-
-    # Retries handle transient overloads; timeout gives enough room for backoff
+        msg = ("⚠️ Anthropic API key not configured. In Streamlit Cloud go to "
+               "Manage app → Settings → Secrets and add: "
+               "anthropic_api_key = \"sk-ant-...\"")
+        if text_placeholder is not None:
+            text_placeholder.markdown(msg)
+        return msg, []
+ 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=45.0, max_retries=3)
-
+ 
+    # System prompt with prompt caching — cuts ~1-3s off subsequent requests
+    system_param = [{
+        "type": "text",
+        "text": SYSTEM_PROMPT,
+        "cache_control": {"type": "ephemeral"},
+    }]
+ 
+    # Fastest model first; fall back only if overloaded
+    fallback_chain = [
+        "claude-haiku-4-5-20251001",   # fast primary — ~3-4× faster than Sonnet
+        "claude-sonnet-5",              # fallback for complex reasoning
+        "claude-sonnet-4-6",            # last resort
+    ]
+ 
     messages = []
     for msg in conversation_history:
         messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": user_question})
-
+ 
     dataframes = []
-    max_iterations = 3
+    max_iterations = 2
     model_used = None
-
-    for _ in range(max_iterations):
-        try:
-            response, model_used = _create_with_fallback(
-                client, messages, SYSTEM_PROMPT, TOOLS
-            )
-        except anthropic.APIStatusError as e:
-            if e.status_code == 529:
-                return ("⚠️ Anthropic's servers are currently overloaded across all "
-                        "available models. This usually clears within a minute — please "
-                        "try again shortly. (Your app and data are fine.)"), dataframes
-            if e.status_code == 429:
-                return ("⚠️ Rate limit hit. Wait a few seconds and try again."), dataframes
-            if e.status_code == 401:
-                return ("⚠️ API key rejected. Check your `anthropic_api_key` in "
-                        "Streamlit secrets."), dataframes
-            return (f"⚠️ AI request failed ({e.status_code}): {e.message}"), dataframes
-        except Exception as e:
-            return (f"⚠️ Unexpected error contacting the AI: {e}"), dataframes
-
-        # Tool use loop
-        if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
+ 
+    for _iteration in range(max_iterations):
+        # Try each model in the fallback chain
+        streamed_ok = False
+        final_message = None
+        accumulated_text = ""
+ 
+        for model in fallback_chain:
+            try:
+                accumulated_text = ""
+                with client.messages.stream(
+                    model=model,
+                    max_tokens=800,
+                    system=system_param,
+                    tools=TOOLS,
+                    messages=messages,
+                ) as stream:
+                    for text in stream.text_stream:
+                        accumulated_text += text
+                        if text_placeholder is not None:
+                            text_placeholder.markdown(
+                                accumulated_text
+                                + " <span style='color:#6355ff;opacity:0.7'>▊</span>",
+                                unsafe_allow_html=True,
+                            )
+                    final_message = stream.get_final_message()
+ 
+                streamed_ok = True
+                model_used = model
+                break
+ 
+            except anthropic.APIStatusError as e:
+                if e.status_code in (429, 529):
+                    continue  # try next model
+                err = _format_api_error(e)
+                if text_placeholder is not None:
+                    text_placeholder.markdown(err)
+                return err, dataframes
+            except Exception as e:
+                err = f"⚠️ Unexpected error contacting the AI: {e}"
+                if text_placeholder is not None:
+                    text_placeholder.markdown(err)
+                return err, dataframes
+ 
+        if not streamed_ok:
+            err = ("⚠️ All AI models are currently overloaded. "
+                   "Please try again in a minute.")
+            if text_placeholder is not None:
+                text_placeholder.markdown(err)
+            return err, dataframes
+ 
+        # Now process the final message
+        if final_message.stop_reason == "tool_use":
+            # Swap streamed text for a clean "querying" state while SQL runs
+            if text_placeholder is not None:
+                text_placeholder.markdown(
+                    "🔍 <span style='color:#6355ff;font-weight:600'>"
+                    "Querying your database…</span>",
+                    unsafe_allow_html=True,
+                )
+ 
+            messages.append({"role": "assistant", "content": final_message.content})
             tool_results = []
-            for block in response.content:
+            for block in final_message.content:
                 if block.type == "tool_use":
                     sql = block.input.get("sql", "")
                     try:
@@ -840,18 +885,24 @@ def ask_claude(user_question, conversation_history):
                         "content": result_str,
                     })
             messages.append({"role": "user", "content": tool_results})
+            # Loop to next iteration for the final answer
         else:
-            # Final answer
-            answer = ""
-            for block in response.content:
-                if block.type == "text":
-                    answer += block.text
-            # Optional: annotate when we fell back to a smaller model
-            if model_used and model_used != "claude-sonnet-4-6":
-                answer += f"\n\n<sub style='color:#94a3b8;'>⚡ Answered by {model_used} (primary model was busy)</sub>"
-            return answer, dataframes
-
-    return "The assistant took too many steps. Try rephrasing your question.", dataframes
+            # Final answer — remove cursor, add model note if we fell back
+            final_answer = accumulated_text
+            if model_used and model_used != "claude-haiku-4-5-20251001":
+                final_answer += (
+                    f"\n\n<sub style='color:#94a3b8;'>⚡ Answered by "
+                    f"{model_used} (primary was busy)</sub>"
+                )
+            if text_placeholder is not None:
+                text_placeholder.markdown(final_answer, unsafe_allow_html=True)
+            return final_answer, dataframes
+ 
+    # Max iterations reached without final answer
+    fallback_msg = "The assistant took too many steps. Try rephrasing your question."
+    if text_placeholder is not None:
+        text_placeholder.markdown(fallback_msg)
+    return fallback_msg, dataframes
 
 # ── AURORA HEADER ─────────────────────────────────────────────────────────────
 
@@ -1491,8 +1542,7 @@ with tab5:
     st.subheader("🤖 AI Supply Chain Analyst")
     st.caption("Ask questions about your inventory, orders, and operations in plain English. "
                "The AI queries your live data and gives specific recommendations.")
-
-    # Diagnostic tool with the same retry-enabled client
+ 
     with st.expander("🔌 Connection check — click here if the AI is not answering"):
         if st.button("Test AI connection", key="ai_test"):
             if not ANTHROPIC_API_KEY:
@@ -1503,19 +1553,18 @@ with tab5:
                     import anthropic as _an
                     _c = _an.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=30.0, max_retries=3)
                     _r = _c.messages.create(
-                        model="claude-sonnet-4-6", max_tokens=20,
+                        model="claude-haiku-4-5-20251001", max_tokens=20,
                         messages=[{"role": "user", "content": "Reply with exactly: OK"}],
                     )
                     alert_box("success", "✅ API key and model work — response: " + _esc(_r.content[0].text))
                 except Exception as e:
                     alert_box("error", "❌ " + _esc(str(e)))
-
+ 
     if "ai_messages" not in st.session_state:
         st.session_state.ai_messages = []
     if "pending_question" not in st.session_state:
         st.session_state.pending_question = None
-
-    # Suggested questions
+ 
     st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 8px;">Try asking</div>',
                 unsafe_allow_html=True)
     suggestion_cols = st.columns(4)
@@ -1529,19 +1578,18 @@ with tab5:
         with suggestion_cols[i]:
             if st.button(sug, key=f"sug_{i}", use_container_width=True):
                 st.session_state.pending_question = sug
-
+                # NO st.rerun() — natural button-click rerun handles it
+ 
     if st.session_state.ai_messages:
         st.markdown("---")
-
-    # Render existing conversation history
+ 
     for msg in st.session_state.ai_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["display"], unsafe_allow_html=True)
             for _sql, df in msg.get("dataframes", []):
                 with st.expander("📊 View data"):
                     render_table(df, index=True, height=300)
-
-    # Input pinned below the conversation (clears on submit)
+ 
     with st.form("ai_form", clear_on_submit=True):
         col_in, col_btn = st.columns([6, 1])
         with col_in:
@@ -1552,30 +1600,28 @@ with tab5:
             )
         with col_btn:
             submitted = st.form_submit_button("Send", use_container_width=True)
-
+ 
     question = None
     if st.session_state.pending_question:
         question = st.session_state.pending_question
         st.session_state.pending_question = None
     elif submitted and user_input:
         question = user_input
-
+ 
     if question:
-        # ── IMMEDIATE FEEDBACK: user's question renders before the API call ──
+        # User question renders instantly
         with st.chat_message("user"):
             st.markdown(question)
-
-        # Fat, unmissable loading indicator right where the user is looking
+ 
+        # Streaming placeholder — starts as loading dots, becomes streamed text
         with st.chat_message("assistant"):
-            loading = st.empty()
-            loading.markdown("""
+            text_placeholder = st.empty()
+            text_placeholder.markdown("""
             <div style="display:flex; align-items:center; gap:14px; padding:6px 0;">
               <div style="display:flex; gap:6px;">
                 <span class="dot"></span><span class="dot"></span><span class="dot"></span>
               </div>
-              <span style="color:#6355ff; font-weight:600; font-size:14px;">
-                Querying your database and analyzing… (usually 15–40 seconds)
-              </span>
+              <span style="color:#6355ff; font-weight:600; font-size:14px;">Thinking…</span>
             </div>
             <style>
               .dot {
@@ -1590,28 +1636,27 @@ with tab5:
               }
             </style>
             """, unsafe_allow_html=True)
-
-            # Build history from prior turns
+ 
             history = [{"role": m["role"], "content": m["display"]}
                        for m in st.session_state.ai_messages]
-            answer, dataframes = ask_claude(question, history)
-
-            # Swap loading state for the real answer
-            loading.empty()
-            st.markdown(answer, unsafe_allow_html=True)
+ 
+            # Stream directly into the placeholder — user sees text appear live
+            answer, dataframes = ask_claude(question, history, text_placeholder=text_placeholder)
+ 
+            # Render dataframes AFTER the streamed answer
             for _sql, df in dataframes:
                 with st.expander("📊 View data"):
                     render_table(df, index=True, height=300)
-
-        # Persist the exchange so it survives the rerun
+ 
         st.session_state.ai_messages.append({"role": "user", "display": question, "dataframes": []})
         st.session_state.ai_messages.append({"role": "assistant", "display": answer, "dataframes": dataframes})
         st.rerun()
-
+ 
     if st.session_state.ai_messages:
         if st.button("🗑️ Clear conversation"):
             st.session_state.ai_messages = []
             st.rerun()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6: ALERT HISTORY
