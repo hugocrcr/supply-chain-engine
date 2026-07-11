@@ -1560,11 +1560,17 @@ with tab5:
                 except Exception as e:
                     alert_box("error", "❌ " + _esc(str(e)))
  
+    # ── Initialize state ────────────────────────────────────────────────
     if "ai_messages" not in st.session_state:
         st.session_state.ai_messages = []
     if "pending_question" not in st.session_state:
         st.session_state.pending_question = None
+    if "_processing" not in st.session_state:
+        st.session_state._processing = False
  
+    is_processing = st.session_state._processing
+ 
+    # ── Suggestion buttons (DISABLED while processing to block queue) ──
     st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 8px;">Try asking</div>',
                 unsafe_allow_html=True)
     suggestion_cols = st.columns(4)
@@ -1576,13 +1582,14 @@ with tab5:
     ]
     for i, sug in enumerate(suggestions):
         with suggestion_cols[i]:
-            if st.button(sug, key=f"sug_{i}", use_container_width=True):
+            if st.button(sug, key=f"sug_{i}", use_container_width=True,
+                         disabled=is_processing):
                 st.session_state.pending_question = sug
-                # NO st.rerun() — natural button-click rerun handles it
  
     if st.session_state.ai_messages:
         st.markdown("---")
  
+    # ── Render all messages from state (single source of truth) ────────
     for msg in st.session_state.ai_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["display"], unsafe_allow_html=True)
@@ -1590,6 +1597,7 @@ with tab5:
                 with st.expander("📊 View data"):
                     render_table(df, index=True, height=300)
  
+    # ── Input form (also disabled while processing) ────────────────────
     with st.form("ai_form", clear_on_submit=True):
         col_in, col_btn = st.columns([6, 1])
         with col_in:
@@ -1597,10 +1605,44 @@ with tab5:
                 "Ask a question about your supply chain data…",
                 key="ai_input", label_visibility="collapsed",
                 placeholder="Ask a question about your supply chain data…",
+                disabled=is_processing,
             )
         with col_btn:
-            submitted = st.form_submit_button("Send", use_container_width=True)
+            submitted = st.form_submit_button("Send", use_container_width=True,
+                                              disabled=is_processing)
  
+    # ═══════════════════════════════════════════════════════════════════
+    # STATE MACHINE — order matters, do NOT rearrange
+    # ═══════════════════════════════════════════════════════════════════
+ 
+    # PRIORITY 1: If we're mid-processing, do that NOW.
+    # Discard any queued button clicks — they're duplicate frustration-clicks.
+    if is_processing:
+        st.session_state.pending_question = None  # kill queued clicks
+ 
+        # Last message in state is the user question we need to answer
+        pending_q = st.session_state.ai_messages[-1]["display"]
+ 
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing your data…"):
+                history = [
+                    {"role": m["role"], "content": m["display"]}
+                    for m in st.session_state.ai_messages[:-1]
+                ]
+                try:
+                    # Note: NO text_placeholder passed — keeps flow simple
+                    answer, dataframes = ask_claude(pending_q, history)
+                except Exception as e:
+                    answer = f"⚠️ Error: {e}"
+                    dataframes = []
+ 
+        st.session_state.ai_messages.append({
+            "role": "assistant", "display": answer, "dataframes": dataframes
+        })
+        st.session_state._processing = False
+        st.rerun()
+ 
+    # PRIORITY 2: Extract a new question (only if we're NOT processing)
     question = None
     if st.session_state.pending_question:
         question = st.session_state.pending_question
@@ -1608,64 +1650,21 @@ with tab5:
     elif submitted and user_input:
         question = user_input
  
-    # ── Step 1: capture new question, add to state, rerun ─────────────
+    # PRIORITY 3: If we captured a new question, register it and start processing
     if question:
         st.session_state.ai_messages.append({
             "role": "user", "display": question, "dataframes": []
         })
-        st.session_state._processing_question = question
+        st.session_state._processing = True
         st.rerun()
-
-    # ── Step 2: on the following run, stream the answer ───────────────
-    if st.session_state.get("_processing_question"):
-        pending_q = st.session_state._processing_question
-        # Clear the flag NOW so a rerun during streaming can't retrigger
-        st.session_state._processing_question = None
-
-        with st.chat_message("assistant"):
-            text_placeholder = st.empty()
-            text_placeholder.markdown("""
-            <div style="display:flex; align-items:center; gap:14px; padding:6px 0;">
-              <div style="display:flex; gap:6px;">
-                <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-              </div>
-              <span style="color:#6355ff; font-weight:600; font-size:14px;">Thinking…</span>
-            </div>
-            <style>
-              .dot { width: 8px; height: 8px; border-radius: 50%; background: #6355ff;
-                     animation: bounce 1.4s infinite ease-in-out both; }
-              .dot:nth-child(1) { animation-delay: -0.32s; }
-              .dot:nth-child(2) { animation-delay: -0.16s; }
-              @keyframes bounce {
-                0%, 80%, 100% { transform: scale(0); opacity: 0.3; }
-                40% { transform: scale(1); opacity: 1; }
-              }
-            </style>
-            """, unsafe_allow_html=True)
-
-            # Build history EXCLUDING the last user msg (which is pending_q itself)
-            history = [
-                {"role": m["role"], "content": m["display"]}
-                for m in st.session_state.ai_messages[:-1]
-            ]
-
-            answer, dataframes = ask_claude(
-                pending_q, history, text_placeholder=text_placeholder
-            )
-
-            for _sql, df in dataframes:
-                with st.expander("📊 View data"):
-                    render_table(df, index=True, height=300)
-
-        st.session_state.ai_messages.append({
-            "role": "assistant", "display": answer, "dataframes": dataframes
-        })
-        st.rerun()
-
+ 
+    # ── Clear conversation button ──────────────────────────────────────
     if st.session_state.ai_messages:
         if st.button("🗑️ Clear conversation"):
             st.session_state.ai_messages = []
+            st.session_state._processing = False
             st.rerun()
+ 
 
 
 # ══════════════════════════════════════════════════════════════════════════════
