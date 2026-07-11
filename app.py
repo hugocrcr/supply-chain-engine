@@ -1569,7 +1569,7 @@ with tab5:
     if "next_question_id" not in st.session_state:
         st.session_state.next_question_id = None
  
-    # ── Suggestion buttons — stamp with unique ID when clicked ───────
+    # ── Suggestion buttons ───────────────────────────────────────────
     st.markdown('<div style="font-size:13px;font-weight:700;margin:2px 0 8px;">Try asking</div>',
                 unsafe_allow_html=True)
     sug_cols = st.columns(4)
@@ -1585,7 +1585,7 @@ with tab5:
                 st.session_state.next_question = sug
                 st.session_state.next_question_id = str(uuid.uuid4())
  
-    # ── Render conversation from state (single source of truth) ──────
+    # ── Render conversation from state ───────────────────────────────
     for msg in st.session_state.ai_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["display"], unsafe_allow_html=True)
@@ -1593,41 +1593,21 @@ with tab5:
                 with st.expander("📊 View data"):
                     render_table(df, index=True, height=300)
  
-    # ── Form-based input (works inside tabs) ─────────────────────────
-    with st.form("ai_form", clear_on_submit=True):
-        col_in, col_btn = st.columns([6, 1])
-        with col_in:
-            user_input = st.text_input(
-                "Ask a question about your supply chain data…",
-                key="ai_input", label_visibility="collapsed",
-                placeholder="Ask a question about your supply chain data…",
-            )
-        with col_btn:
-            submitted = st.form_submit_button("Send", use_container_width=True)
- 
-    if submitted and user_input:
-        st.session_state.next_question = user_input
-        st.session_state.next_question_id = str(uuid.uuid4())
- 
-    # ── PROCESS: only if we have a new question with an unseen ID ────
+    # ── PROCESSING BLOCK — renders inline BELOW history, ABOVE form ──
     q = st.session_state.next_question
     qid = st.session_state.next_question_id
     already_done = qid in st.session_state.processed_ids if qid else True
  
     if q and qid and not already_done:
-        # Mark this ID as processed IMMEDIATELY — duplicates are now impossible
         st.session_state.processed_ids.add(qid)
  
-        # Add user message to state
         st.session_state.ai_messages.append({
             "role": "user", "display": q, "dataframes": [], "id": qid
         })
  
-        # Show it immediately
         with st.chat_message("user"):
             st.markdown(q)
  
-        # Generate answer
         with st.chat_message("assistant"):
             with st.spinner("Analyzing your data…"):
                 history = [{"role": m["role"], "content": m["display"]}
@@ -1642,14 +1622,29 @@ with tab5:
                 with st.expander("📊 View data"):
                     render_table(df, index=True, height=300)
  
-        # Save answer to state
         st.session_state.ai_messages.append({
             "role": "assistant", "display": answer, "dataframes": dataframes, "id": qid
         })
  
-        # Clear the trigger so it doesn't fire again
         st.session_state.next_question = None
         st.session_state.next_question_id = None
+ 
+    # ── Form input — always pinned below the latest exchange ─────────
+    with st.form("ai_form", clear_on_submit=True):
+        col_in, col_btn = st.columns([6, 1])
+        with col_in:
+            user_input = st.text_input(
+                "Ask a question about your supply chain data…",
+                key="ai_input", label_visibility="collapsed",
+                placeholder="Ask a question about your supply chain data…",
+            )
+        with col_btn:
+            submitted = st.form_submit_button("Send", use_container_width=True)
+ 
+    if submitted and user_input:
+        st.session_state.next_question = user_input
+        st.session_state.next_question_id = str(uuid.uuid4())
+        st.rerun()   # fresh run so the processing block renders ABOVE the form
  
     # ── Clear conversation ───────────────────────────────────────────
     if st.session_state.ai_messages:
@@ -1659,7 +1654,6 @@ with tab5:
             st.session_state.next_question = None
             st.session_state.next_question_id = None
             st.rerun()
-
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6: ALERT HISTORY
 # ══════════════════════════════════════════════════════════════════════════════
