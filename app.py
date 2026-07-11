@@ -51,8 +51,11 @@ ANTHROPIC_API_KEY = st.secrets.get("anthropic_api_key", "")
 
 @st.cache_resource
 def get_connection():
-    """Create a persistent database connection."""
-    return psycopg2.connect(**DB_CONFIG)
+    """Create a persistent database connection (autocommit — read-only workload,
+    prevents one bad query from aborting the shared transaction)."""
+    conn = psycopg2.connect(**DB_CONFIG)
+    conn.autocommit = True
+    return conn
 
 
 @st.cache_data(ttl=300)
@@ -290,8 +293,8 @@ def style_fig(fig, height=360, legend=False):
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(family="Plus Jakarta Sans, sans-serif", color="#334155", size=12.5),
         margin=dict(l=0, r=12, t=10, b=34),
-        xaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6", tickfont=dict(color="#475569", size=12), title_font=dict(color="#64748b", size=12)),
-        yaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6", tickfont=dict(color="#334155", size=12.5), title_font=dict(color="#64748b", size=12)),
+        xaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6", automargin=True, tickfont=dict(color="#475569", size=12), title_font=dict(color="#64748b", size=12)),
+        yaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6", automargin=True, tickfont=dict(color="#334155", size=12.5), title_font=dict(color="#64748b", size=12)),
         showlegend=legend,
         legend=dict(orientation="h", yanchor="bottom", y=-0.22, x=0, font=dict(size=11.5, color="#334155")),
         hoverlabel=dict(bgcolor="#0f172a", font=dict(color="#fff", family="Plus Jakarta Sans")),
@@ -704,7 +707,7 @@ def ask_claude(user_question, conversation_history):
                 "Manage app → Settings → Secrets and add a line: anthropic_api_key = \"sk-ant-...\""), []
 
     # timeout + limited retries so a network stall fails fast instead of hanging the whole app
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=40.0, max_retries=1)
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=25.0, max_retries=0)
 
     # Build messages from history + new question
     messages = []
@@ -938,7 +941,9 @@ with tab1:
                 labels={"dead_value": "Dead Stock Value ($)", "category": ""},
             )
             fig = style_fig(fig, height=320)
-            fig.update_layout(coloraxis_showscale=False, yaxis=dict(categoryorder="total ascending", gridcolor="rgba(0,0,0,0)"))
+            fig.update_layout(coloraxis_showscale=False, margin=dict(l=10, r=12, t=10, b=34),
+                              yaxis=dict(categoryorder="total ascending", gridcolor="rgba(0,0,0,0)",
+                                         showticklabels=True, automargin=True))
             try:
                 fig.update_traces(marker_cornerradius=6)
             except Exception:
@@ -1395,6 +1400,22 @@ with tab4:
 with tab5:
     st.subheader("🤖 AI Supply Chain Analyst")
     st.caption("Ask questions about your inventory, orders, and operations in plain English. The AI queries your live data and gives specific recommendations.")
+
+    # One-click diagnosis: minimal API ping (no tools, 15s timeout) — shows the exact error
+    with st.expander("🔌 Connection check — click here if the AI is not answering"):
+        if st.button("Test AI connection", key="ai_test"):
+            if not ANTHROPIC_API_KEY:
+                alert_box("error", "❌ No <b>anthropic_api_key</b> found in Streamlit secrets. "
+                                   "Add it under Manage app → Settings → Secrets.")
+            else:
+                try:
+                    import anthropic as _an
+                    _c = _an.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=15.0, max_retries=0)
+                    _r = _c.messages.create(model="claude-sonnet-4-5", max_tokens=20,
+                                            messages=[{"role": "user", "content": "Reply with exactly: OK"}])
+                    alert_box("success", "✅ API key and model work — response: " + _esc(_r.content[0].text))
+                except Exception as e:
+                    alert_box("error", "❌ " + _esc(str(e)))
 
     if "ai_messages" not in st.session_state:
         st.session_state.ai_messages = []
