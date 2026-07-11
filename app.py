@@ -1593,19 +1593,29 @@ with tab5:
                 with st.expander("📊 View data"):
                     render_table(df, index=True, height=300)
  
-    # ── Chat input (Streamlit's official widget, handles reruns cleanly)
-    typed = st.chat_input("Ask a question about your supply chain data…")
-    if typed:
-        st.session_state.next_question = typed
+    # ── Form-based input (works inside tabs) ─────────────────────────
+    with st.form("ai_form", clear_on_submit=True):
+        col_in, col_btn = st.columns([6, 1])
+        with col_in:
+            user_input = st.text_input(
+                "Ask a question about your supply chain data…",
+                key="ai_input", label_visibility="collapsed",
+                placeholder="Ask a question about your supply chain data…",
+            )
+        with col_btn:
+            submitted = st.form_submit_button("Send", use_container_width=True)
+ 
+    if submitted and user_input:
+        st.session_state.next_question = user_input
         st.session_state.next_question_id = str(uuid.uuid4())
  
-    # ── PROCESS: only if we have a new question that we haven't processed
+    # ── PROCESS: only if we have a new question with an unseen ID ────
     q = st.session_state.next_question
     qid = st.session_state.next_question_id
     already_done = qid in st.session_state.processed_ids if qid else True
  
     if q and qid and not already_done:
-        # Mark this ID as processed IMMEDIATELY so duplicates are impossible
+        # Mark this ID as processed IMMEDIATELY — duplicates are now impossible
         st.session_state.processed_ids.add(qid)
  
         # Add user message to state
@@ -1649,7 +1659,6 @@ with tab5:
             st.session_state.next_question = None
             st.session_state.next_question_id = None
             st.rerun()
- 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6: ALERT HISTORY
