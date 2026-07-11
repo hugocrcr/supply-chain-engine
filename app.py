@@ -1537,17 +1537,16 @@ with tab4:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 5: AI ASSISTANT (Claude API with tool calling)
 # ══════════════════════════════════════════════════════════════════════════════
-
+import uuid
+ 
 with tab5:
     st.subheader("🤖 AI Supply Chain Analyst")
-    st.caption("Ask questions about your inventory, orders, and operations in plain English. "
-               "The AI queries your live data and gives specific recommendations.")
+    st.caption("Ask questions about your inventory, orders, and operations in plain English.")
  
-    with st.expander("🔌 Connection check — click here if the AI is not answering"):
+    with st.expander("🔌 Connection check"):
         if st.button("Test AI connection", key="ai_test"):
             if not ANTHROPIC_API_KEY:
-                alert_box("error", "❌ No <b>anthropic_api_key</b> found in Streamlit secrets. "
-                                   "Add it under Manage app → Settings → Secrets.")
+                alert_box("error", "❌ No anthropic_api_key found in secrets.")
             else:
                 try:
                     import anthropic as _an
@@ -1556,24 +1555,24 @@ with tab5:
                         model="claude-haiku-4-5-20251001", max_tokens=20,
                         messages=[{"role": "user", "content": "Reply with exactly: OK"}],
                     )
-                    alert_box("success", "✅ API key and model work — response: " + _esc(_r.content[0].text))
+                    alert_box("success", "✅ API works — response: " + _esc(_r.content[0].text))
                 except Exception as e:
                     alert_box("error", "❌ " + _esc(str(e)))
  
-    # ── Initialize state ────────────────────────────────────────────────
+    # ── Initialize state ─────────────────────────────────────────────
     if "ai_messages" not in st.session_state:
         st.session_state.ai_messages = []
-    if "pending_question" not in st.session_state:
-        st.session_state.pending_question = None
-    if "_processing" not in st.session_state:
-        st.session_state._processing = False
+    if "processed_ids" not in st.session_state:
+        st.session_state.processed_ids = set()
+    if "next_question" not in st.session_state:
+        st.session_state.next_question = None
+    if "next_question_id" not in st.session_state:
+        st.session_state.next_question_id = None
  
-    is_processing = st.session_state._processing
- 
-    # ── Suggestion buttons (DISABLED while processing to block queue) ──
-    st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 8px;">Try asking</div>',
+    # ── Suggestion buttons — stamp with unique ID when clicked ───────
+    st.markdown('<div style="font-size:13px;font-weight:700;margin:2px 0 8px;">Try asking</div>',
                 unsafe_allow_html=True)
-    suggestion_cols = st.columns(4)
+    sug_cols = st.columns(4)
     suggestions = [
         "What's our dead stock value by category?",
         "Which SKUs stock out this week?",
@@ -1581,15 +1580,12 @@ with tab5:
         "Where is cash trapped in my warehouses?",
     ]
     for i, sug in enumerate(suggestions):
-        with suggestion_cols[i]:
-            if st.button(sug, key=f"sug_{i}", use_container_width=True,
-                         disabled=is_processing):
-                st.session_state.pending_question = sug
+        with sug_cols[i]:
+            if st.button(sug, key=f"sug_{i}", use_container_width=True):
+                st.session_state.next_question = sug
+                st.session_state.next_question_id = str(uuid.uuid4())
  
-    if st.session_state.ai_messages:
-        st.markdown("---")
- 
-    # ── Render all messages from state (single source of truth) ────────
+    # ── Render conversation from state (single source of truth) ──────
     for msg in st.session_state.ai_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["display"], unsafe_allow_html=True)
@@ -1597,75 +1593,63 @@ with tab5:
                 with st.expander("📊 View data"):
                     render_table(df, index=True, height=300)
  
-    # ── Input form (also disabled while processing) ────────────────────
-    with st.form("ai_form", clear_on_submit=True):
-        col_in, col_btn = st.columns([6, 1])
-        with col_in:
-            user_input = st.text_input(
-                "Ask a question about your supply chain data…",
-                key="ai_input", label_visibility="collapsed",
-                placeholder="Ask a question about your supply chain data…",
-                disabled=is_processing,
-            )
-        with col_btn:
-            submitted = st.form_submit_button("Send", use_container_width=True,
-                                              disabled=is_processing)
+    # ── Chat input (Streamlit's official widget, handles reruns cleanly)
+    typed = st.chat_input("Ask a question about your supply chain data…")
+    if typed:
+        st.session_state.next_question = typed
+        st.session_state.next_question_id = str(uuid.uuid4())
  
-    # ═══════════════════════════════════════════════════════════════════
-    # STATE MACHINE — order matters, do NOT rearrange
-    # ═══════════════════════════════════════════════════════════════════
+    # ── PROCESS: only if we have a new question that we haven't processed
+    q = st.session_state.next_question
+    qid = st.session_state.next_question_id
+    already_done = qid in st.session_state.processed_ids if qid else True
  
-    # PRIORITY 1: If we're mid-processing, do that NOW.
-    # Discard any queued button clicks — they're duplicate frustration-clicks.
-    if is_processing:
-        st.session_state.pending_question = None  # kill queued clicks
+    if q and qid and not already_done:
+        # Mark this ID as processed IMMEDIATELY so duplicates are impossible
+        st.session_state.processed_ids.add(qid)
  
-        # Last message in state is the user question we need to answer
-        pending_q = st.session_state.ai_messages[-1]["display"]
+        # Add user message to state
+        st.session_state.ai_messages.append({
+            "role": "user", "display": q, "dataframes": [], "id": qid
+        })
  
+        # Show it immediately
+        with st.chat_message("user"):
+            st.markdown(q)
+ 
+        # Generate answer
         with st.chat_message("assistant"):
             with st.spinner("Analyzing your data…"):
-                history = [
-                    {"role": m["role"], "content": m["display"]}
-                    for m in st.session_state.ai_messages[:-1]
-                ]
+                history = [{"role": m["role"], "content": m["display"]}
+                           for m in st.session_state.ai_messages[:-1]]
                 try:
-                    # Note: NO text_placeholder passed — keeps flow simple
-                    answer, dataframes = ask_claude(pending_q, history)
+                    answer, dataframes = ask_claude(q, history)
                 except Exception as e:
                     answer = f"⚠️ Error: {e}"
                     dataframes = []
+            st.markdown(answer, unsafe_allow_html=True)
+            for _sql, df in dataframes:
+                with st.expander("📊 View data"):
+                    render_table(df, index=True, height=300)
  
+        # Save answer to state
         st.session_state.ai_messages.append({
-            "role": "assistant", "display": answer, "dataframes": dataframes
+            "role": "assistant", "display": answer, "dataframes": dataframes, "id": qid
         })
-        st.session_state._processing = False
-        st.rerun()
  
-    # PRIORITY 2: Extract a new question (only if we're NOT processing)
-    question = None
-    if st.session_state.pending_question:
-        question = st.session_state.pending_question
-        st.session_state.pending_question = None
-    elif submitted and user_input:
-        question = user_input
+        # Clear the trigger so it doesn't fire again
+        st.session_state.next_question = None
+        st.session_state.next_question_id = None
  
-    # PRIORITY 3: If we captured a new question, register it and start processing
-    if question:
-        st.session_state.ai_messages.append({
-            "role": "user", "display": question, "dataframes": []
-        })
-        st.session_state._processing = True
-        st.rerun()
- 
-    # ── Clear conversation button ──────────────────────────────────────
+    # ── Clear conversation ───────────────────────────────────────────
     if st.session_state.ai_messages:
         if st.button("🗑️ Clear conversation"):
             st.session_state.ai_messages = []
-            st.session_state._processing = False
+            st.session_state.processed_ids = set()
+            st.session_state.next_question = None
+            st.session_state.next_question_id = None
             st.rerun()
  
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6: ALERT HISTORY
