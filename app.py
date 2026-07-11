@@ -434,23 +434,26 @@ def _attr(s):
     return _esc(str(s)).replace('"', "&quot;")
 
 
-def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560, wrap=None):
-    """Light HTML table with Excel-style click-to-sort column headers (arrows)."""
+def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560,
+                   wrap=None, index=False):
+    """Light HTML table with Excel-style click-to-sort column headers (arrows).
+    Set index=True to include a leading '#' row-number column."""
     if df is None or len(df) == 0:
-        st.markdown('<div style="padding:14px;color:#94a3b8;font-size:13px;">No data.</div>', unsafe_allow_html=True)
+        st.markdown('<div style="padding:14px;color:#94a3b8;font-size:13px;">No data.</div>',
+                    unsafe_allow_html=True)
         return
     formats = formats or {}
     aligns = aligns or {}
     cell_style = cell_style or {}
     wrap = set(wrap or [])
     cols = list(df.columns)
-
+ 
     def isnum(c):
         try:
             return pd.api.types.is_numeric_dtype(df[c])
         except Exception:
             return False
-
+ 
     def disp(c, v):
         if v is None or (isinstance(v, float) and pd.isna(v)):
             return ""
@@ -461,16 +464,27 @@ def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560, w
             return _esc(f(v)) if callable(f) else _esc(f.format(v))
         except Exception:
             return _esc(v)
-
+ 
+    # Header row
     ths = ""
+    col_offset = 1 if index else 0
+    if index:
+        ths += ('<th onclick="sortT(0)" style="text-align:right;color:#94a3b8;">'
+                '#<span class="arw" id="arw0">&#8597;</span></th>')
     for j, c in enumerate(cols):
+        actual_j = j + col_offset
         al = aligns.get(c, "right" if isnum(c) else "left")
-        ths += ('<th onclick="sortT(%d)" style="text-align:%s;">%s<span class="arw" id="arw%d">&#8597;</span></th>'
-                % (j, al, _esc(c), j))
-
+        ths += ('<th onclick="sortT(%d)" style="text-align:%s;">%s'
+                '<span class="arw" id="arw%d">&#8597;</span></th>'
+                % (actual_j, al, _esc(c), actual_j))
+ 
+    # Body rows
     trs = ""
-    for _, r in df.iterrows():
+    for i, (_, r) in enumerate(df.iterrows()):
         tds = ""
+        if index:
+            tds += ('<td data-v="%d" style="text-align:right;color:#94a3b8;'
+                    'font-size:12px;white-space:nowrap;">%d</td>' % (i, i))
         for c in cols:
             v = r[c]
             al = aligns.get(c, "right" if isnum(c) else "left")
@@ -484,11 +498,12 @@ def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560, w
                     extra = cell_style[c](v) or ""
                 except Exception:
                     extra = ""
-            ws = "white-space:normal;word-break:break-word;" if c in wrap else "white-space:nowrap;"
+            ws = ("white-space:normal;word-break:break-word;"
+                  if c in wrap else "white-space:nowrap;")
             tds += ('<td data-v="%s" style="text-align:%s;%s%s">%s</td>'
                     % (dv, al, ws, extra, disp(c, v)))
         trs += "<tr>%s</tr>" % tds
-
+ 
     css = """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
@@ -503,7 +518,7 @@ def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560, w
     tr:nth-child(even) td{background:#fbfbfe;}
     </style>
     """ % int(height - 20)
-
+ 
     script = """
     <script>
     function sortT(col){
@@ -526,7 +541,7 @@ def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560, w
     }
     </script>
     """
-
+ 
     html = (css + '<div class="wrap"><table id="st"><thead><tr>' + ths
             + '</tr></thead><tbody>' + trs + '</tbody></table></div>' + script)
     components.html(html, height=height, scrolling=False)
@@ -1324,13 +1339,12 @@ with tab2:
         """)
         if not top_dead.empty:
             top_dead.columns = ["Product", "Stock", "Unit Cost", "Inventory Value", "Days of Supply"]
-            render_table(top_dead, index=True, height=520, wrap=["Product"], formats={
+            sortable_table(top_dead, index=True, height=520, wrap=["Product"], formats={
                 "Stock": "{:,.0f}", "Unit Cost": "${:,.2f}",
                 "Inventory Value": "${:,.0f}", "Days of Supply": "{:,.0f}",
             })
         else:
             alert_box("info", "No dead stock data.")
-
     with detail_right:
         st.subheader("Days of Supply Distribution")
         scatter_data = run_query("""
@@ -1407,9 +1421,9 @@ with tab3:
         """)
         if not otd_region.empty:
             otd_region.columns = ["Region", "Total Orders", "OTD Rate %", "Avg Lead Time"]
-            render_table(otd_region, index=True, height=380, formats={
-                "Total Orders": "{:,.0f}", "OTD Rate %": "{:.1f}", "Avg Lead Time": "{:.2f}",
-            })
+            sortable_table(otd_region, index=True, height=380, formats={
+    "Total Orders": "{:,.0f}", "OTD Rate %": "{:.1f}", "Avg Lead Time": "{:.2f}",
+})
         else:
             alert_box("info", "No orders data.")
 
@@ -1678,10 +1692,10 @@ with tab6:
             daily_kpis.columns = ["Date", "Dead Stock", "Excess Stock",
                                    "Total Inventory", "Stockout Cost", "OTD Rate"]
             daily_kpis["Date"] = daily_kpis["Date"].astype(str)
-            render_table(daily_kpis, index=True, height=460, formats={
-                "Dead Stock": "${:,.0f}", "Excess Stock": "${:,.0f}", "Total Inventory": "${:,.0f}",
-                "Stockout Cost": "${:,.0f}", "OTD Rate": "{:.1f}%",
-            })
+            sortable_table(daily_kpis, index=True, height=460, formats={
+    "Dead Stock": "${:,.0f}", "Excess Stock": "${:,.0f}", "Total Inventory": "${:,.0f}",
+    "Stockout Cost": "${:,.0f}", "OTD Rate": "{:.1f}%",
+})
         else:
             alert_box("info", "No KPI history yet. Run the n8n pipeline to start populating daily KPIs.")
 
@@ -1695,7 +1709,7 @@ with tab6:
             ["Weekly Brief", "Every Monday 8am", "🛠 In progress"],
             ["AI Narrative Alerts", "Per-SKU recommendations", "🛠 In progress"],
         ], columns=["Alert Type", "Threshold", "Status"])
-        render_table(thresholds, wrap=["Threshold"])
+        sortable_table(thresholds, wrap=["Threshold"], height=280)
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7: DATA HEALTH
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1757,7 +1771,8 @@ with tab7:
 
         if not missing.empty:
             missing.columns = ["Field", "Missing", "Total"]
-            render_table(missing, wrap=["Field"], formats={"Missing": "{:,.0f}", "Total": "{:,.0f}"})
+            sortable_table(missing, wrap=["Field"], height=320,
+               formats={"Missing": "{:,.0f}", "Total": "{:,.0f}"})
 
     with health_right:
         st.markdown("### Duplicates & Outliers")
@@ -1771,7 +1786,7 @@ with tab7:
         if not dupes.empty:
             st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 6px;">Duplicate SKUs</div>', unsafe_allow_html=True)
             dupes.columns = ["Product Name", "Count"]
-            render_table(dupes, wrap=["Product Name"], formats={"Count": "{:,.0f}"})
+            sortable_table(dupes, wrap=["Product Name"], height=380, formats={"Count": "{:,.0f}"})
         else:
             alert_box("success", "✅ No duplicate SKUs found")
 
@@ -1786,7 +1801,8 @@ with tab7:
         if not outliers.empty:
             st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:14px 0 6px;">Price Outliers (5x+ above average)</div>', unsafe_allow_html=True)
             outliers.columns = ["Product", "Unit Cost"]
-            render_table(outliers, wrap=["Product"], formats={"Unit Cost": "${:,.2f}"})
+            sortable_table(outliers, wrap=["Product"], height=380,
+               formats={"Unit Cost": "${:,.2f}"})
         else:
             alert_box("success", "✅ No price outliers detected")
 
@@ -1807,7 +1823,8 @@ with tab7:
 
         if not no_orders.empty:
             no_orders.columns = ["Product", "Stock", "Value"]
-            render_table(no_orders, index=True, height=380, wrap=["Product"], formats={"Stock": "{:,.0f}", "Value": "${:,.0f}"})
+            sortable_table(no_orders, index=True, height=380, wrap=["Product"],
+               formats={"Stock": "{:,.0f}", "Value": "${:,.0f}"})
             alert_box("warning", f"⚠️ {len(no_orders)} SKUs have inventory but zero order history")
         else:
             alert_box("success", "✅ All inventory SKUs have matching orders")
@@ -1825,7 +1842,8 @@ with tab7:
 
         if not no_inv.empty:
             no_inv.columns = ["Product", "Orders", "Revenue"]
-            render_table(no_inv, index=True, height=380, wrap=["Product"], formats={"Orders": "{:,.0f}", "Revenue": "${:,.0f}"})
+            sortable_table(no_inv, index=True, height=380, wrap=["Product"],
+               formats={"Orders": "{:,.0f}", "Revenue": "${:,.0f}"})
             alert_box("warning", f"⚠️ {len(no_inv)} products have orders but no inventory record")
         else:
             alert_box("success", "✅ All ordered products exist in inventory")
