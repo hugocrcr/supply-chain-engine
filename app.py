@@ -189,6 +189,32 @@ st.markdown("""
     /* hide Streamlit chrome */
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
 
+    /* ═══ KILL THE SCRIPT-RUNNING DIM OVERLAY ══════════════════════════════ */
+    /* Streamlit dims the whole page during script runs — override it */
+    .stApp[data-scriptrunstate="running"],
+    .stApp[data-scriptrunstate="rerunning"],
+    .stApp[data-teststate="running"] {
+        opacity: 1 !important;
+    }
+    .stApp[data-scriptrunstate="running"] .main,
+    .stApp[data-scriptrunstate="rerunning"] .main,
+    .stApp[data-scriptrunstate="running"] section[data-testid="stMain"],
+    .stApp[data-scriptrunstate="rerunning"] section[data-testid="stMain"],
+    .stApp[data-teststate="running"] section[data-testid="stMain"] {
+        opacity: 1 !important;
+        filter: none !important;
+        pointer-events: auto !important;
+    }
+    /* Nuke the running-status widget entirely */
+    [data-testid="stStatusWidget"] { display: none !important; }
+    div[data-testid="stToolbar"] { display: none !important; }
+    /* Fade-in animation for streamed answers so they feel snappier */
+    @keyframes fadeInUp {
+        from { opacity: 0; transform: translateY(4px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    [data-testid="stChatMessage"] { animation: fadeInUp 0.25s ease-out; }
+
     /* ── Force LIGHT on native widgets (defensive — in case base theme is not applied) ─ */
     [data-testid="stDataFrame"], [data-testid="stTable"] { background:#ffffff !important; }
     div[data-baseweb="select"] > div { background:#ffffff !important; border-color:rgba(15,23,42,0.12) !important; }
@@ -705,6 +731,36 @@ def execute_tool_call(sql):
         return f"ERROR executing query: {str(e)}", None
 
 
+def _create_with_fallback(client, messages, system_prompt, tools):
+    """Try primary model, fall back to newer/lighter models on overload."""
+    import anthropic
+    fallback_chain = [
+        "claude-sonnet-4-6",           # your current default
+        "claude-sonnet-5",             # newer, often different capacity pool
+        "claude-haiku-4-5-20251001",   # last resort — fast, cheap, usually available
+    ]
+    last_error = None
+    for model in fallback_chain:
+        try:
+            response = client.messages.create(
+                model=model,
+                max_tokens=2000,
+                system=system_prompt,
+                tools=tools,
+                messages=messages,
+            )
+            return response, model
+        except anthropic.APIStatusError as e:
+            last_error = e
+            # 529 overloaded, 429 rate limited → try the next model
+            if e.status_code in (429, 529):
+                continue
+            # any other API error is a real problem — bubble up
+            raise
+    # exhausted all models
+    raise last_error
+
+
 def ask_claude(user_question, conversation_history):
     """Send question to Claude with tool calling. Returns (answer_text, list_of_dataframes)."""
     try:
@@ -714,12 +770,12 @@ def ask_claude(user_question, conversation_history):
 
     if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY == "YOUR_ANTHROPIC_API_KEY_HERE":
         return ("⚠️ Anthropic API key not configured. In Streamlit Cloud go to "
-                "Manage app → Settings → Secrets and add a line: anthropic_api_key = \"sk-ant-...\""), []
+                "Manage app → Settings → Secrets and add a line: "
+                "anthropic_api_key = \"sk-ant-...\""), []
 
-    # timeout + limited retries so a network stall fails fast instead of hanging the whole app
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=25.0, max_retries=0)
+    # Retries handle transient overloads; timeout gives enough room for backoff
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=45.0, max_retries=3)
 
-    # Build messages from history + new question
     messages = []
     for msg in conversation_history:
         messages.append({"role": msg["role"], "content": msg["content"]})
@@ -727,40 +783,45 @@ def ask_claude(user_question, conversation_history):
 
     dataframes = []
     max_iterations = 3
+    model_used = None
 
     for _ in range(max_iterations):
         try:
-            response = client.messages.create(
-                model="claude-sonnet-5",
-                max_tokens=2000,
-                system=SYSTEM_PROMPT,
-                tools=TOOLS,
-                messages=messages,
+            response, model_used = _create_with_fallback(
+                client, messages, SYSTEM_PROMPT, TOOLS
             )
+        except anthropic.APIStatusError as e:
+            if e.status_code == 529:
+                return ("⚠️ Anthropic's servers are currently overloaded across all "
+                        "available models. This usually clears within a minute — please "
+                        "try again shortly. (Your app and data are fine.)"), dataframes
+            if e.status_code == 429:
+                return ("⚠️ Rate limit hit. Wait a few seconds and try again."), dataframes
+            if e.status_code == 401:
+                return ("⚠️ API key rejected. Check your `anthropic_api_key` in "
+                        "Streamlit secrets."), dataframes
+            return (f"⚠️ AI request failed ({e.status_code}): {e.message}"), dataframes
         except Exception as e:
-            return (f"⚠️ The AI request failed: {e}\n\n"
-                    "Check that the model name in app.py is valid and that ANTHROPIC_API_KEY "
-                    "is set correctly in your Streamlit secrets."), dataframes
+            return (f"⚠️ Unexpected error contacting the AI: {e}"), dataframes
 
-        # Check if Claude wants to use a tool
+        # Tool use loop
         if response.stop_reason == "tool_use":
-            # Add Claude's response (including tool use) to messages
             messages.append({"role": "assistant", "content": response.content})
-
-            # Process each tool call
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
                     sql = block.input.get("sql", "")
-                    result_str, df = execute_tool_call(sql)
-                    if df is not None:
-                        dataframes.append((sql, df))
+                    try:
+                        result_str, df = execute_tool_call(sql)
+                        if df is not None:
+                            dataframes.append((sql, df))
+                    except Exception as e:
+                        result_str = f"ERROR executing query: {str(e)}"
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
                         "content": result_str,
                     })
-
             messages.append({"role": "user", "content": tool_results})
         else:
             # Final answer
@@ -768,10 +829,12 @@ def ask_claude(user_question, conversation_history):
             for block in response.content:
                 if block.type == "text":
                     answer += block.text
+            # Optional: annotate when we fell back to a smaller model
+            if model_used and model_used != "claude-sonnet-4-6":
+                answer += f"\n\n<sub style='color:#94a3b8;'>⚡ Answered by {model_used} (primary model was busy)</sub>"
             return answer, dataframes
 
     return "The assistant took too many steps. Try rephrasing your question.", dataframes
-
 
 # ── AURORA HEADER ─────────────────────────────────────────────────────────────
 
@@ -1409,9 +1472,10 @@ with tab4:
 
 with tab5:
     st.subheader("🤖 AI Supply Chain Analyst")
-    st.caption("Ask questions about your inventory, orders, and operations in plain English. The AI queries your live data and gives specific recommendations.")
+    st.caption("Ask questions about your inventory, orders, and operations in plain English. "
+               "The AI queries your live data and gives specific recommendations.")
 
-    # One-click diagnosis: minimal API ping (no tools, 15s timeout) — shows the exact error
+    # Diagnostic tool with the same retry-enabled client
     with st.expander("🔌 Connection check — click here if the AI is not answering"):
         if st.button("Test AI connection", key="ai_test"):
             if not ANTHROPIC_API_KEY:
@@ -1420,9 +1484,11 @@ with tab5:
             else:
                 try:
                     import anthropic as _an
-                    _c = _an.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=15.0, max_retries=0)
-                    _r = _c.messages.create(model="claude-sonnet-5", max_tokens=20,
-                                            messages=[{"role": "user", "content": "Reply with exactly: OK"}])
+                    _c = _an.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=30.0, max_retries=3)
+                    _r = _c.messages.create(
+                        model="claude-sonnet-4-6", max_tokens=20,
+                        messages=[{"role": "user", "content": "Reply with exactly: OK"}],
+                    )
                     alert_box("success", "✅ API key and model work — response: " + _esc(_r.content[0].text))
                 except Exception as e:
                     alert_box("error", "❌ " + _esc(str(e)))
@@ -1433,7 +1499,8 @@ with tab5:
         st.session_state.pending_question = None
 
     # Suggested questions
-    st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 8px;">Try asking</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 8px;">Try asking</div>',
+                unsafe_allow_html=True)
     suggestion_cols = st.columns(4)
     suggestions = [
         "What's our dead stock value by category?",
@@ -1450,10 +1517,10 @@ with tab5:
     if st.session_state.ai_messages:
         st.markdown("---")
 
-    # Conversation history — grows downward; the input stays just beneath it
+    # Render existing conversation history
     for msg in st.session_state.ai_messages:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["display"])
+            st.markdown(msg["display"], unsafe_allow_html=True)
             for _sql, df in msg.get("dataframes", []):
                 with st.expander("📊 View data"):
                     render_table(df, index=True, height=300)
@@ -1478,14 +1545,50 @@ with tab5:
         question = user_input
 
     if question:
-    # Immediately show the user's question so they know it registered
-        st.session_state.ai_messages.append({"role": "user", "display": question, "dataframes": []})
+        # ── IMMEDIATE FEEDBACK: user's question renders before the API call ──
         with st.chat_message("user"):
             st.markdown(question)
+
+        # Fat, unmissable loading indicator right where the user is looking
         with st.chat_message("assistant"):
-            with st.spinner("Querying your database and analyzing… this can take 20–40 seconds"):
-                history = [{"role": m["role"], "content": m["display"]} for m in st.session_state.ai_messages[:-1]]
-                answer, dataframes = ask_claude(question, history)
+            loading = st.empty()
+            loading.markdown("""
+            <div style="display:flex; align-items:center; gap:14px; padding:6px 0;">
+              <div style="display:flex; gap:6px;">
+                <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              </div>
+              <span style="color:#6355ff; font-weight:600; font-size:14px;">
+                Querying your database and analyzing… (usually 15–40 seconds)
+              </span>
+            </div>
+            <style>
+              .dot {
+                width: 8px; height: 8px; border-radius: 50%; background: #6355ff;
+                animation: bounce 1.4s infinite ease-in-out both;
+              }
+              .dot:nth-child(1) { animation-delay: -0.32s; }
+              .dot:nth-child(2) { animation-delay: -0.16s; }
+              @keyframes bounce {
+                0%, 80%, 100% { transform: scale(0); opacity: 0.3; }
+                40% { transform: scale(1); opacity: 1; }
+              }
+            </style>
+            """, unsafe_allow_html=True)
+
+            # Build history from prior turns
+            history = [{"role": m["role"], "content": m["display"]}
+                       for m in st.session_state.ai_messages]
+            answer, dataframes = ask_claude(question, history)
+
+            # Swap loading state for the real answer
+            loading.empty()
+            st.markdown(answer, unsafe_allow_html=True)
+            for _sql, df in dataframes:
+                with st.expander("📊 View data"):
+                    render_table(df, index=True, height=300)
+
+        # Persist the exchange so it survives the rerun
+        st.session_state.ai_messages.append({"role": "user", "display": question, "dataframes": []})
         st.session_state.ai_messages.append({"role": "assistant", "display": answer, "dataframes": dataframes})
         st.rerun()
 
@@ -1493,7 +1596,6 @@ with tab5:
         if st.button("🗑️ Clear conversation"):
             st.session_state.ai_messages = []
             st.rerun()
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6: ALERT HISTORY
