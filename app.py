@@ -214,7 +214,24 @@ st.markdown("""
         to   { opacity: 1; transform: translateY(0); }
     }
     [data-testid="stChatMessage"] { animation: fadeInUp 0.25s ease-out; }
-
+    /* Catch all Streamlit rerun state variants across versions */
+    .stApp[data-script-run-state="running"],
+    .stApp[data-script-run-state="rerunning"],
+    body[data-scriptrunstate="running"],
+    body[data-scriptrunstate="rerunning"] {
+        opacity: 1 !important;
+    }
+    /* Prevent buttons from graying out during their own click's rerun */
+    .stButton > button:focus:not(:active),
+    .stButton > button[data-testid="baseButton-secondary"]:disabled {
+        opacity: 1 !important;
+        color: #475569 !important;
+        background: #ffffff !important;
+    }
+    /* Kill any global overlay div Streamlit might inject */
+    div[data-testid="stAppViewBlockContainer"] { opacity: 1 !important; }
+    iframe[title="streamlit_dim"] { display: none !important; }
+            
     /* ── Force LIGHT on native widgets (defensive — in case base theme is not applied) ─ */
     [data-testid="stDataFrame"], [data-testid="stTable"] { background:#ffffff !important; }
     div[data-baseweb="select"] > div { background:#ffffff !important; border-color:rgba(15,23,42,0.12) !important; }
@@ -1512,7 +1529,6 @@ with tab5:
         with suggestion_cols[i]:
             if st.button(sug, key=f"sug_{i}", use_container_width=True):
                 st.session_state.pending_question = sug
-                st.rerun()
 
     if st.session_state.ai_messages:
         st.markdown("---")
