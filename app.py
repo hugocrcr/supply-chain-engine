@@ -40,10 +40,11 @@ DB_CONFIG = {
     "database": "postgres",
     "user": "postgres.wnwuaeuifcdxncdbhjrj",
     "password": st.secrets["supabase_password"],
-    "sslmode": "require", "connect_timeout": 30,
+    "sslmode": "require", "connect_timeout": 15,
+    "options": "-c statement_timeout=25000",
 }
 
-ANTHROPIC_API_KEY = st.secrets["anthropic_api_key"]
+ANTHROPIC_API_KEY = st.secrets.get("anthropic_api_key", "")
 
 
 # ── SUPABASE CONNECTION ───────────────────────────────────────────────────────
@@ -698,10 +699,12 @@ def ask_claude(user_question, conversation_history):
     except ImportError:
         return "The 'anthropic' package is not installed. Run: pip install anthropic", []
 
-    if ANTHROPIC_API_KEY == "YOUR_ANTHROPIC_API_KEY_HERE":
-        return "⚠️ Anthropic API key not configured. Open app.py and set ANTHROPIC_API_KEY at the top of the file.", []
+    if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY == "YOUR_ANTHROPIC_API_KEY_HERE":
+        return ("⚠️ Anthropic API key not configured. In Streamlit Cloud go to "
+                "Manage app → Settings → Secrets and add a line: anthropic_api_key = \"sk-ant-...\""), []
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    # timeout + limited retries so a network stall fails fast instead of hanging the whole app
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=40.0, max_retries=1)
 
     # Build messages from history + new question
     messages = []
@@ -710,7 +713,7 @@ def ask_claude(user_question, conversation_history):
     messages.append({"role": "user", "content": user_question})
 
     dataframes = []
-    max_iterations = 5
+    max_iterations = 3
 
     for _ in range(max_iterations):
         try:
