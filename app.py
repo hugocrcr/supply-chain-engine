@@ -1706,8 +1706,8 @@ with tab6:
             ["Dead Stock", "inventory_value > $5,000", "🟢 Active"],
             ["Excess Stock", "excess_value > $5,000", "🟢 Active"],
             ["Stockout Risk", "days_until_stockout < 14", "🟢 Active"],
-            ["Weekly Brief", "Every Monday 8am", "🛠 In progress"],
-            ["AI Narrative Alerts", "Per-SKU recommendations", "🛠 In progress"],
+            ["Weekly Brief", "Every Monday 8am", "🟢 Active"],
+            ["AI Narrative Alerts", "Per-SKU recommendations", "🟢 Active"],
         ], columns=["Alert Type", "Threshold", "Status"])
         sortable_table(thresholds, wrap=["Threshold"], height=280)
 # ══════════════════════════════════════════════════════════════════════════════
