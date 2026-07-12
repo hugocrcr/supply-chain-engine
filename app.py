@@ -1881,7 +1881,7 @@ with tab7:
  
 with tab8:
     st.subheader("💰 AP Automation — Invoice Processing")
-    st.caption("Supplier invoices captured from Gmail, extracted by Claude Vision, matched to inventory SKUs.")
+    st.caption("Supplier invoices auto-captured from Mail. AI extracts line items and flags pricing discrepancies against your inventory in seconds.")
  
     # ── Top KPI row ─────────────────────────────────────────────────
     inv_kpi = run_query("""
