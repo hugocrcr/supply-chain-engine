@@ -1869,6 +1869,173 @@ with tab7:
         else:
             alert_box("error", f"<b>NEEDS ATTENTION</b> — {issues} issues found. Clean before trusting metrics.")
 
+# TAB 8 — INVOICES / AP AUTOMATION
+# ═══════════════════════════════════════════════════════════════════════════
+# HOW TO ADD:
+#   1. Find where tabs are created (search for: st.tabs([)
+#      Currently: tab1, tab2, ..., tab7 = st.tabs([...])
+#      Add "💰 Invoices" to the list; assign tab8 = st.tabs(...)[-1]
+#   2. Paste this entire block AFTER the "with tab7:" section, before any
+#      helper code that comes at the very end of the file.
+# 
+ 
+with tab8:
+    st.subheader("💰 AP Automation — Invoice Processing")
+    st.caption("Supplier invoices captured from Gmail, extracted by Claude Vision, matched to inventory SKUs.")
+ 
+    # ── Top KPI row ─────────────────────────────────────────────────
+    inv_kpi = run_query("""
+        SELECT
+            COUNT(*) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days') AS invoices_month,
+            COALESCE(SUM(total_amount) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days'), 0) AS ap_month,
+            COUNT(*) FILTER (WHERE discrepancy_flag = TRUE AND processed_at >= NOW() - INTERVAL '30 days') AS discrepancies,
+            CASE WHEN COUNT(*) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days') > 0
+                 THEN ROUND(100.0 * COUNT(*) FILTER (WHERE status='matched' AND processed_at >= NOW() - INTERVAL '30 days')
+                             / COUNT(*) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days'), 1)
+                 ELSE 0 END AS match_pct,
+            COUNT(*) FILTER (WHERE status='unmatched') AS unmatched_pending,
+            COUNT(*) AS total_ever
+        FROM invoices
+    """)
+ 
+    if inv_kpi.empty or int(inv_kpi.iloc[0]['total_ever']) == 0:
+        alert_box("info",
+            "🎯 <b>No invoices yet.</b> Once you set up the n8n Invoice Processing Agent "
+            "and send an invoice to your Gmail with the <code>supplystack-invoices</code> label, "
+            "it will appear here within a minute.")
+    else:
+        r = inv_kpi.iloc[0]
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            st.markdown(f"""
+            <div style="background:#fff;border:1px solid #e6e8f0;border-radius:14px;padding:16px;">
+              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;">Invoices (30d)</div>
+              <div style="font-size:26px;font-weight:700;color:#0f172a;margin-top:6px;">{int(r['invoices_month']):,}</div>
+            </div>""", unsafe_allow_html=True)
+        with k2:
+            st.markdown(f"""
+            <div style="background:#fff;border:1px solid #e6e8f0;border-radius:14px;padding:16px;">
+              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;">Total AP (30d)</div>
+              <div style="font-size:26px;font-weight:700;color:#0f172a;margin-top:6px;">${float(r['ap_month']):,.0f}</div>
+            </div>""", unsafe_allow_html=True)
+        with k3:
+            disc_color = "#ef4444" if int(r['discrepancies']) > 0 else "#22c55e"
+            st.markdown(f"""
+            <div style="background:#fff;border:1px solid #e6e8f0;border-radius:14px;padding:16px;">
+              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;">Discrepancies</div>
+              <div style="font-size:26px;font-weight:700;color:{disc_color};margin-top:6px;">{int(r['discrepancies'])}</div>
+            </div>""", unsafe_allow_html=True)
+        with k4:
+            st.markdown(f"""
+            <div style="background:#fff;border:1px solid #e6e8f0;border-radius:14px;padding:16px;">
+              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;">Match rate</div>
+              <div style="font-size:26px;font-weight:700;color:#0f172a;margin-top:6px;">{float(r['match_pct']):.1f}%</div>
+            </div>""", unsafe_allow_html=True)
+ 
+        st.markdown("")
+ 
+        # ── Filters ─────────────────────────────────────────────────
+        f1, f2, f3 = st.columns([2, 2, 3])
+        with f1:
+            status_filter = st.selectbox(
+                "Status",
+                ["All", "received", "matched", "unmatched", "discrepancy", "paid", "disputed"],
+                key="inv_status_filter",
+            )
+        with f2:
+            days_filter = st.selectbox(
+                "Time window",
+                ["Last 30 days", "Last 90 days", "Last 12 months", "All time"],
+                key="inv_days_filter",
+            )
+        with f3:
+            search = st.text_input(
+                "Search vendor or invoice #",
+                key="inv_search",
+                placeholder="e.g. Acme Corp, INV-2026-0417",
+            )
+ 
+        days_map = {"Last 30 days": 30, "Last 90 days": 90, "Last 12 months": 365, "All time": 100000}
+        days = days_map[days_filter]
+ 
+        where_clauses = ["processed_at >= NOW() - INTERVAL '%d days'" % days]
+        if status_filter != "All":
+            if status_filter == "discrepancy":
+                where_clauses.append("discrepancy_flag = TRUE")
+            else:
+                where_clauses.append("status = '%s'" % status_filter)
+        if search:
+            s = search.replace("'", "''")
+            where_clauses.append(
+                "(vendor_name ILIKE '%%%s%%' OR invoice_number ILIKE '%%%s%%')" % (s, s)
+            )
+        where_sql = " AND ".join(where_clauses)
+ 
+        # ── Invoice table ───────────────────────────────────────────
+        invoices_df = run_query(f"""
+            SELECT
+                invoice_number   AS "Invoice #",
+                vendor_name      AS "Vendor",
+                invoice_date     AS "Date",
+                due_date         AS "Due",
+                total_amount     AS "Amount",
+                currency         AS "Cur",
+                status           AS "Status",
+                CASE WHEN discrepancy_flag THEN '⚠ Yes' ELSE '—' END AS "Flag",
+                processed_at::date AS "Processed"
+            FROM invoices
+            WHERE {where_sql}
+            ORDER BY processed_at DESC
+            LIMIT 200
+        """)
+ 
+        if invoices_df.empty:
+            alert_box("info", "No invoices match the current filters.")
+        else:
+            st.markdown(f"##### Showing {len(invoices_df)} invoice(s)")
+            sortable_table(invoices_df, index=True, height=440, wrap=["Vendor", "Invoice #"], formats={
+                "Amount": "${:,.2f}",
+            }, cell_style={
+                "Status": lambda v: (
+                    "background:#dcfce7;color:#166534;" if v == "matched" else
+                    "background:#fef3c7;color:#92400e;" if v == "received" else
+                    "background:#fee2e2;color:#991b1b;" if v == "unmatched" else
+                    "background:#fef3c7;color:#92400e;" if v == "discrepancy" else ""
+                ),
+                "Flag": lambda v: "color:#ef4444;font-weight:600;" if "Yes" in str(v) else "color:#94a3b8;",
+            })
+ 
+        # ── Recent discrepancies drill-down ─────────────────────────
+        st.markdown("")
+        st.markdown("### Recent line-item discrepancies")
+        st.caption("Line items where the invoiced price differs from the expected inventory unit cost by more than 5%.")
+ 
+        disc_lines = run_query("""
+            SELECT
+                i.invoice_number || ' — ' || i.vendor_name AS "Invoice",
+                li.description          AS "Line",
+                li.matched_product_name  AS "Matched SKU",
+                li.quantity             AS "Qty",
+                li.unit_price           AS "Invoiced $",
+                li.expected_unit_cost   AS "Expected $",
+                li.price_variance_pct   AS "Variance %"
+            FROM invoice_line_items li
+            JOIN invoices i ON i.id = li.invoice_id
+            WHERE ABS(COALESCE(li.price_variance_pct, 0)) > 5
+              AND i.processed_at >= NOW() - INTERVAL '90 days'
+            ORDER BY ABS(li.price_variance_pct) DESC
+            LIMIT 20
+        """)
+ 
+        if disc_lines.empty:
+            alert_box("success", "✅ No pricing discrepancies in the last 90 days.")
+        else:
+            sortable_table(disc_lines, index=True, height=380,
+                           wrap=["Invoice", "Line", "Matched SKU"], formats={
+                "Qty": "{:,.0f}", "Invoiced $": "${:,.4f}",
+                "Expected $": "${:,.4f}", "Variance %": "{:+.1f}%",
+            })
+ 
 # ── FOOTER ────────────────────────────────────────────────────────────────────
 
 st.markdown("---")
