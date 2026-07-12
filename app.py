@@ -986,7 +986,7 @@ st.markdown(
 
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📊 Executive Dashboard",
     "📦 Inventory Detail",
     "🚚 Operations",
@@ -994,6 +994,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "🤖 AI Assistant",
     "🔔 Alert History",
     "🏥 Data Health",
+    "💰 Invoices",           # ← new
 ])
 
 
