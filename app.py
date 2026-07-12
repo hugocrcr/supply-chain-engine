@@ -1994,7 +1994,8 @@ with tab8:
         else:
             st.markdown(f"##### Showing {len(invoices_df)} invoice(s)")
             sortable_table(invoices_df, index=True, height=440, wrap=["Vendor", "Invoice #"], formats={
-                "Amount": "${:,.2f}",
+    "Amount": "${:,.2f}",
+    "Due": lambda v: "—" if v is None else str(v),
             }, cell_style={
                 "Status": lambda v: (
                     "background:#dcfce7;color:#166534;" if v == "matched" else
