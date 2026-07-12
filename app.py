@@ -1992,9 +1992,14 @@ with tab8:
         if invoices_df.empty:
             alert_box("info", "No invoices match the current filters.")
         else:
-            st.markdown(f"##### Showing {len(invoices_df)} invoice(s)")
-            sortable_table(invoices_df, index=True, height=440, wrap=["Vendor", "Invoice #"], formats={
-    "Amount": "${:,.2f}",
+            st.markdown(
+    f'<div style="font-size:14px;font-weight:600;color:#0f172a;margin:8px 0 12px;">'
+    f'Showing {len(invoices_df)} invoice(s)</div>',
+    unsafe_allow_html=True,
+)
+            sortable_table(invoices_df, index=True,
+               height=min(440, 90 + len(invoices_df) * 44),
+               wrap=["Vendor", "Invoice #"], formats={
     "Due": lambda v: "—" if v is None else str(v),
             }, cell_style={
                 "Status": lambda v: (
@@ -2007,7 +2012,6 @@ with tab8:
             })
  
         # ── Recent discrepancies drill-down ─────────────────────────
-        st.markdown("")
         st.markdown("### Recent line-item discrepancies")
         st.caption("Line items where the invoiced price differs from the expected inventory unit cost by more than 5%.")
  
@@ -2031,8 +2035,9 @@ with tab8:
         if disc_lines.empty:
             alert_box("success", "✅ No pricing discrepancies in the last 90 days.")
         else:
-            sortable_table(disc_lines, index=True, height=380,
-                           wrap=["Invoice", "Line", "Matched SKU"], formats={
+            sortable_table(disc_lines, index=True,
+               height=min(380, 90 + len(disc_lines) * 44),
+               wrap=["Invoice", "Line", "Matched SKU"], formats={
                 "Qty": "{:,.0f}", "Invoiced $": "${:,.4f}",
                 "Expected $": "${:,.4f}", "Variance %": "{:+.1f}%",
             })
