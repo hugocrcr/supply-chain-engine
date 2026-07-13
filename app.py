@@ -2023,7 +2023,6 @@ with tab8:
             ),
             "Flag": lambda v: "color:#ef4444;font-weight:600;" if "Yes" in str(v) else "color:#94a3b8;",
         })
-        st.markdown('<div style="margin-top:-30px"></div>', unsafe_allow_html=True)
  # ── Mark invoices as paid ────────────────────────────────────
         with st.expander("💳 Update invoice status"):
             st.caption("Select one or more invoices, choose a new status, apply.")
