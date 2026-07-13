@@ -2010,7 +2010,57 @@ with tab8:
                 ),
                 "Flag": lambda v: "color:#ef4444;font-weight:600;" if "Yes" in str(v) else "color:#94a3b8;",
             })
- 
+ # ── Mark invoices as paid ────────────────────────────────────
+        st.markdown("---")
+        with st.expander("💳 Update invoice status"):
+            st.caption("Select one or more invoices, choose a new status, apply.")
+            
+            # Get unmatched/received invoices for selection
+            pending = run_query("""
+                SELECT invoice_number, vendor_name, total_amount, currency, status
+                FROM invoices
+                WHERE status IN ('received', 'matched', 'unmatched', 'discrepancy')
+                ORDER BY processed_at DESC
+                LIMIT 100
+            """)
+            
+            if pending.empty:
+                st.info("No pending invoices to update.")
+            else:
+                labels = [
+                    f"{r['invoice_number']} — {r['vendor_name']} ({r['currency']} {float(r['total_amount']):,.2f}) [{r['status']}]"
+                    for _, r in pending.iterrows()
+                ]
+                selected = st.multiselect("Select invoice(s)", labels, key="inv_status_multi")
+                
+                col_a, col_b = st.columns([2, 1])
+                with col_a:
+                    new_status = st.selectbox(
+                        "Set status to",
+                        ["paid", "disputed", "received", "matched"],
+                        key="inv_new_status",
+                    )
+                with col_b:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    apply = st.button("Apply", type="primary", use_container_width=True)
+                
+                if apply and selected:
+                    # Extract invoice numbers from selected labels
+                    inv_numbers = [s.split(" — ")[0] for s in selected]
+                    inv_list = ",".join(f"'{i}'" for i in inv_numbers)
+                    
+                    try:
+                        run_query(f"""
+                            UPDATE invoices
+                            SET status = '{new_status}'
+                            WHERE invoice_number IN ({inv_list})
+                        """)
+                        st.success(f"✅ Updated {len(inv_numbers)} invoice(s) to '{new_status}'")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Failed: {e}")
+                elif apply and not selected:
+                    st.warning("Select at least one invoice first.")
         # ── Recent discrepancies drill-down ─────────────────────────
         st.markdown("### Recent line-item discrepancies")
         st.caption("Line items where the invoiced price differs from the expected inventory unit cost by more than 5%.")
