@@ -735,6 +735,7 @@ RULES:
 6. Keep answers concise — 2-4 short paragraphs max. Lead with the answer, then context, then recommendation.
 7. If a question is ambiguous, make a reasonable assumption and state it.
 8. If asked about something not in the database, say what data would be needed.
+9. Minimize tool calls. Combine multiple metrics into single SQL queries with JOINs and CTEs rather than running separate queries. Aim for 1-2 queries per question, 3 maximum for strategic plans.
 
 If the question asks for a detailed plan or in-depth analysis, structure your response in clear sections with markdown tables. Prioritize depth on the top 3-5 SKUs/items rather than covering everything superficially.
 
@@ -833,7 +834,7 @@ def ask_claude(user_question, conversation_history, text_placeholder=None):
     messages.append({"role": "user", "content": user_question})
  
     dataframes = []
-    max_iterations = 4
+    max_iterations = 6
     model_used = None
  
     for _iteration in range(max_iterations):
