@@ -736,6 +736,8 @@ RULES:
 7. If a question is ambiguous, make a reasonable assumption and state it.
 8. If asked about something not in the database, say what data would be needed.
 
+If the question asks for a detailed plan or in-depth analysis, structure your response in clear sections with markdown tables. Prioritize depth on the top 3-5 SKUs/items rather than covering everything superficially.
+
 Example of a great answer style:
 "Your dead stock value is $45.9M across 96 SKUs — 97% of your total inventory value, which is critically high. The biggest offender is the Diamondback Serene Classic ($18.1M trapped, 2,669 days of supply). Recommended: start with the top 5 SKUs which hold $37.6M combined. Options: bundle promotions, liquidation channels, or write-offs for tax benefit. Acting on just the top 5 this quarter could recover $10-15M in cash."
 """
@@ -845,7 +847,7 @@ def ask_claude(user_question, conversation_history, text_placeholder=None):
                 accumulated_text = ""
                 with client.messages.stream(
                     model=model,
-                    max_tokens=800,
+                    max_tokens=3000,
                     system=system_param,
                     tools=TOOLS,
                     messages=messages,
