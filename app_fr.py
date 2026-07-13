@@ -1354,7 +1354,7 @@ with tab2:
             top_dead.columns = ["Produit", "Stock", "Coût unitaire", "Valeur du stock", "Jours de stock"]
             sortable_table(top_dead, index=True, height=520, wrap=["Produit"], formats={
             "Stock": "{:,.0f}", "Coût unitaire": "${:,.2f}",
-            "Valeur du stock": "${:,.0f}", "Jours de stock": "{:,.0f}",
+            "Valeur du stock": "${:,.0f}", "Jours de stock": lambda v: "∞" if v and v >= 9000 else f"{int(v):,}" if v else "—",
         })
         else:
             alert_box("info", "Aucune donnée de stock dormant.")
@@ -1666,7 +1666,7 @@ with tab5:
                 placeholder="Posez une question sur vos données supply chain…",
             )
         with col_btn:
-            submitted = st.form_submit_button("Envoyer", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("Envoyer", use_container_width=True)
  
     if submitted and user_input:
         st.session_state.next_question = user_input
