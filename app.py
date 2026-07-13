@@ -2008,22 +2008,22 @@ with tab8:
     f'Showing {len(invoices_df)} invoice(s)</div>',
     unsafe_allow_html=True,
 )
-            st.markdown('<div style="margin-bottom:-30px"></div>', unsafe_allow_html=True)
-        sortable_table(invoices_df, ...)
-        st.markdown('<div style="margin-top:-30px"></div>', unsafe_allow_html=True)
+           st.markdown('<div style="margin-bottom:-30px"></div>', unsafe_allow_html=True)
         sortable_table(invoices_df, index=True,
-               height=min(440, 68 + len(invoices_df) * 40),
-               wrap=["Vendor", "Invoice #"], formats={
-    "Due": lambda v: "—" if v is None else str(v),
-            }, cell_style={
-                "Status": lambda v: (
-                    "background:#dcfce7;color:#166534;" if v == "matched" else
-                    "background:#fef3c7;color:#92400e;" if v == "received" else
-                    "background:#fee2e2;color:#991b1b;" if v == "unmatched" else
-                    "background:#fef3c7;color:#92400e;" if v == "discrepancy" else ""
-                ),
-                "Flag": lambda v: "color:#ef4444;font-weight:600;" if "Yes" in str(v) else "color:#94a3b8;",
-            })
+                       height=min(440, 68 + len(invoices_df) * 40),
+                       wrap=["Vendor", "Invoice #"], formats={
+            "Amount": "${:,.2f}",
+            "Due": lambda v: "—" if v is None else str(v),
+        }, cell_style={
+            "Status": lambda v: (
+                "background:#dcfce7;color:#166534;" if v == "matched" else
+                "background:#fef3c7;color:#92400e;" if v == "received" else
+                "background:#fee2e2;color:#991b1b;" if v == "unmatched" else
+                "background:#fef3c7;color:#92400e;" if v == "discrepancy" else ""
+            ),
+            "Flag": lambda v: "color:#ef4444;font-weight:600;" if "Yes" in str(v) else "color:#94a3b8;",
+        })
+        st.markdown('<div style="margin-top:-30px"></div>', unsafe_allow_html=True)
  # ── Mark invoices as paid ────────────────────────────────────
         with st.expander("💳 Update invoice status"):
             st.caption("Select one or more invoices, choose a new status, apply.")
