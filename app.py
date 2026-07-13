@@ -1109,9 +1109,9 @@ with tab1:
                 labels={"dead_value": "Dead Stock Value ($)", "category": ""},
             )
             fig = style_fig(fig, height=320)
-            fig.update_layout(coloraxis_showscale=False, margin=dict(l=10, r=12, t=10, b=34),
-                              yaxis=dict(categoryorder="total ascending", gridcolor="rgba(0,0,0,0)",
-                                         showticklabels=True, automargin=True))
+            fig.update_layout(colorxis_showscale=False, margin=dict(l=10, r=12, t=10, b=34),
+                  yaxis=dict(categoryorder="total ascending", gridcolor="rgba(0,0,0,0)",
+                             showticklabels=True, automargin=True))
             try:
                 fig.update_traces(marker_cornerradius=6)
             except Exception:
@@ -1665,7 +1665,7 @@ with tab5:
                 placeholder="Ask a question about your supply chain data…",
             )
         with col_btn:
-            submitted = st.form_submit_button("Send", use_container_width=True)
+            submitted = st.form_submit_button("Send", type="primary", use_container_width=True)
  
     if submitted and user_input:
         st.session_state.next_question = user_input
@@ -1701,12 +1701,12 @@ with tab6:
         """)
 
         if not daily_kpis.empty:
-            daily_kpis.columns = ["Date", "Dead Stock", "Excess Stock",
-                                   "Total Inventory", "Stockout Cost", "OTD Rate"]
+            daily_kpis.columns = ["Date", "Stock dormant", "Stock excédentaire",
+                                   "Stock total", "Coût de rupture", "Taux OTD"]
             daily_kpis["Date"] = daily_kpis["Date"].astype(str)
             sortable_table(daily_kpis, index=True, height=460, formats={
-    "Dead Stock": "${:,.0f}", "Excess Stock": "${:,.0f}", "Total Inventory": "${:,.0f}",
-    "Stockout Cost": "${:,.0f}", "OTD Rate": "{:.1f}%",
+    "Stock dormant": "${:,.0f}", "Stock excédentaire": "${:,.0f}", "Stock total": "${:,.0f}",
+    "Coût de rupture": "${:,.0f}", "Taux OTD": "{:.1f}%",
 })
         else:
             alert_box("info", "No KPI history yet. Run the n8n pipeline to start populating daily KPIs.")
@@ -1715,16 +1715,16 @@ with tab6:
         st.markdown("### Alert Thresholds")
         st.markdown('<div style="font-size:13px;color:#64748b;margin-bottom:8px;">Current alert configuration (editable in the n8n workflow).</div>', unsafe_allow_html=True)
         thresholds = pd.DataFrame([
-            ["Dead Stock", "inventory_value > $5,000", "🟢 Active"],
-            ["Excess Stock", "excess_value > $5,000", "🟢 Active"],
-            ["Stockout Risk", "days_until_stockout < 14", "🟢 Active"],
-            ["Weekly Brief", "Every Monday 8am", "🟢 Active"],
-            ["AI Narrative Alerts", "Per-SKU recommendations", "🟢 Active"],
-        ], columns=["Alert Type", "Threshold", "Status"])
-        sortable_table(thresholds, wrap=["Threshold"], height=280)
+            ["Stock dormant", "inventory_value > $5,000", "🟢 Active"],
+            ["Stock excédentaire", "excess_value > $5,000", "🟢 Active"],
+            ["Risque de rupture", "days_until_stockout < 14", "🟢 Active"],
+            ["Résumé hebdomadaire", "Every Monday 8am", "🟢 Active"],
+            ["Alertes narratives IA", "Per-SKU recommendations", "🟢 Active"],
+        ], columns=["Type d'alerte", "Seuil", "Statut"])
+        sortable_table(thresholds, wrap=["Seuil"], height=280)
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7: DATA HEALTH
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════
 
 with tab7:
     st.subheader("🏥 Data Health Monitor")
@@ -1782,9 +1782,9 @@ with tab7:
         """)
 
         if not missing.empty:
-            missing.columns = ["Field", "Missing", "Total"]
-            sortable_table(missing, wrap=["Field"], height=320,
-               formats={"Missing": "{:,.0f}", "Total": "{:,.0f}"})
+            missing.columns = ["Champ", "Manquant", "Total"]
+            sortable_table(missing, wrap=["Champ"], height=320,
+               formats={"Manquant": "{:,.0f}", "Total": "{:,.0f}"})
 
     with health_right:
         st.markdown("### Duplicates & Outliers")
@@ -1797,8 +1797,8 @@ with tab7:
 
         if not dupes.empty:
             st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 6px;">Duplicate SKUs</div>', unsafe_allow_html=True)
-            dupes.columns = ["Product Name", "Count"]
-            sortable_table(dupes, wrap=["Product Name"], height=380, formats={"Count": "{:,.0f}"})
+            dupes.columns = ["Nom du produit", "Nombre"]
+            sortable_table(dupes, wrap=["Nom du produit"], height=380, formats={"Nombre": "{:,.0f}"})
         else:
             alert_box("success", "✅ No duplicate SKUs found")
 
@@ -1812,9 +1812,9 @@ with tab7:
 
         if not outliers.empty:
             st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:14px 0 6px;">Price Outliers (5x+ above average)</div>', unsafe_allow_html=True)
-            outliers.columns = ["Product", "Unit Cost"]
-            sortable_table(outliers, wrap=["Product"], height=380,
-               formats={"Unit Cost": "${:,.2f}"})
+            outliers.columns = ["Produit", "Coût unitaire"]
+            sortable_table(outliers, wrap=["Produit"], height=380,
+               formats={"Coût unitaire": "${:,.2f}"})
         else:
             alert_box("success", "✅ No price outliers detected")
 
