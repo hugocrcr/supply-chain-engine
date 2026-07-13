@@ -2045,17 +2045,21 @@ with tab8:
                     apply = st.button("Apply", type="primary", use_container_width=True)
                 
                 if apply and selected:
-                    # Extract invoice numbers from selected labels
                     inv_numbers = [s.split(" — ")[0] for s in selected]
                     inv_list = ",".join(f"'{i}'" for i in inv_numbers)
                     
                     try:
-                        run_query(f"""
-                            UPDATE invoices
-                            SET status = '{new_status}'
-                            WHERE invoice_number IN ({inv_list})
-                        """)
-                        st.success(f"✅ Updated {len(inv_numbers)} invoice(s) to '{new_status}'")
+                        import psycopg2
+                        conn = get_connection()
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                f"UPDATE invoices SET status = '{new_status}' "
+                                f"WHERE invoice_number IN ({inv_list})"
+                            )
+                            updated_count = cur.rowcount
+                        conn.commit()
+                        st.success(f"✅ Updated {updated_count} invoice(s) to '{new_status}'")
+                        st.cache_data.clear()
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ Failed: {e}")
