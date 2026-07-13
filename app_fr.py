@@ -1666,7 +1666,7 @@ with tab5:
                 placeholder="Posez une question sur vos données supply chain…",
             )
         with col_btn:
-            submitted = st.form_submit_button("Envoyer", use_container_width=True)
+            submitted = st.form_submit_button("Envoyer", type="primary", use_container_width=True)
  
     if submitted and user_input:
         st.session_state.next_question = user_input
