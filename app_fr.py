@@ -737,6 +737,8 @@ RÈGLES :
 8. Si on vous demande quelque chose qui n'est pas dans la base, dites quelles données seraient nécessaires.
 9. Répondez TOUJOURS en français, avec la ponctuation française (espaces avant : ; ! ?).
 
+Si la question demande un plan détaillé ou une analyse approfondie, structurez votre réponse en sections claires avec des tableaux markdown. Priorisez la profondeur sur les 3-5 SKUs/items les plus importants plutôt que de couvrir tous les éléments superficiellement.
+
 Exemple d'une bonne réponse :
 "Votre stock dormant s'élève à 45,9 M€ répartis sur 96 SKUs — soit 97 % de la valeur totale de votre stock, ce qui est critique. Le principal contributeur est le Diamondback Serene Classic (18,1 M€ bloqués, 2 669 jours de stock). Recommandation : commencez par les 5 SKUs les plus importants qui représentent 37,6 M€ combinés. Options : bundles promotionnels, canaux de liquidation, ou dépréciations pour bénéfice fiscal. Agir sur ces 5 SKUs ce trimestre pourrait libérer 10 à 15 M€ de trésorerie."
 """
