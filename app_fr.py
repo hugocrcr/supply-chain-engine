@@ -2013,18 +2013,19 @@ with tab8:
         sortable_table(invoices_df, ...)
         st.markdown('<div style="margin-top:-30px"></div>', unsafe_allow_html=True)
         sortable_table(invoices_df, index=True,
-               height=min(440, 68 + len(invoices_df) * 40),
-               wrap=["Fournisseur", "N° facture"], formats={
-    "Échéance": lambda v: "—" if v is None else str(v),
-            }, cell_style={
-                "Statut": lambda v: (
-                    "background:#dcfce7;color:#166534;" if v == "matched" else
-                    "background:#fef3c7;color:#92400e;" if v == "received" else
-                    "background:#fee2e2;color:#991b1b;" if v == "unmatched" else
-                    "background:#fef3c7;color:#92400e;" if v == "discrepancy" else ""
-                ),
-                "Alerte": lambda v: "color:#ef4444;font-weight:600;" if "Yes" in str(v) else "color:#94a3b8;",
-            })
+                       height=min(440, 68 + len(invoices_df) * 40),
+                       wrap=["Fournisseur", "N° facture"], formats={
+            "Montant": "${:,.2f}",
+            "Échéance": lambda v: "—" if v is None else str(v),
+        }, cell_style={
+            "Statut": lambda v: (
+                "background:#dcfce7;color:#166534;" if v == "matched" else
+                "background:#fef3c7;color:#92400e;" if v == "received" else
+                "background:#fee2e2;color:#991b1b;" if v == "unmatched" else
+                "background:#fef3c7;color:#92400e;" if v == "discrepancy" else ""
+            ),
+            "Alerte": lambda v: "color:#ef4444;font-weight:600;" if "Yes" in str(v) else "color:#94a3b8;",
+        })
  # ── Mark invoices as paid ────────────────────────────────────
         with st.expander("💳 Mettre à jour le statut d'une facture"):
             st.caption("Sélectionnez une ou plusieurs factures, choisissez un nouveau statut, appliquez.")
