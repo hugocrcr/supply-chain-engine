@@ -1353,7 +1353,7 @@ with tab2:
             top_dead.columns = ["Product", "Stock", "Unit Cost", "Inventory Value", "Days of Supply"]
             sortable_table(top_dead, index=True, height=520, wrap=["Product"], formats={
                 "Stock": "{:,.0f}", "Unit Cost": "${:,.2f}",
-                "Inventory Value": "${:,.0f}", "Days of Supply": "{:,.0f}",
+                "Inventory Value": "${:,.0f}", "Days of Supply": lambda v: "∞" if v and v >= 9000 else f"{int(v):,}" if v else "—",
             })
         else:
             alert_box("info", "No dead stock data.")
@@ -1665,7 +1665,7 @@ with tab5:
                 placeholder="Ask a question about your supply chain data…",
             )
         with col_btn:
-            submitted = st.form_submit_button("Send", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("Send", use_container_width=True)
  
     if submitted and user_input:
         st.session_state.next_question = user_input
