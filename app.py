@@ -1109,7 +1109,7 @@ with tab1:
                 labels={"dead_value": "Dead Stock Value ($)", "category": ""},
             )
             fig = style_fig(fig, height=320)
-            fig.update_layout(colorxis_showscale=False, margin=dict(l=10, r=12, t=10, b=34),
+            fig.update_layout(coloraxis_showscale=False, margin=dict(l=10, r=12, t=10, b=34),
                   yaxis=dict(categoryorder="total ascending", gridcolor="rgba(0,0,0,0)",
                              showticklabels=True, automargin=True))
             try:
