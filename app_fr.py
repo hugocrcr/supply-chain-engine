@@ -832,7 +832,7 @@ def ask_claude(user_question, conversation_history, text_placeholder=None):
     messages.append({"role": "user", "content": user_question})
  
     dataframes = []
-    max_iterations = 2
+    max_iterations = 4
     model_used = None
  
     for _iteration in range(max_iterations):
