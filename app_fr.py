@@ -851,7 +851,7 @@ def ask_claude(user_question, conversation_history, text_placeholder=None):
                 accumulated_text = ""
                 with client.messages.stream(
                     model=model,
-                    max_tokens=800,
+                    max_tokens=6000,
                     system=system_param,
                     tools=TOOLS,
                     messages=messages,
