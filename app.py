@@ -269,6 +269,13 @@ st.markdown("""
     .reo-sub { font-size:11px; font-weight:500; color:#94a3b8; }
     .reo-qty { font-size:12.5px; font-weight:700; color:#0f172a; text-align:right; }
     .reo-pri { font-size:9.5px; font-weight:600; text-transform:uppercase; padding:2px 8px; border-radius:5px; display:inline-block; margin-top:4px; }
+    /* Tighten spacing between sortable_table iframes and expanders below */
+    iframe[title="streamlit_html.html"] + div [data-testid="stExpander"] {
+        margin-top: -12px !important;
+    }
+    [data-testid="stExpander"] {
+        margin-top: 4px !important;
+    }        
 </style>
 """, unsafe_allow_html=True)
 
@@ -1998,7 +2005,7 @@ with tab8:
     unsafe_allow_html=True,
 )
             sortable_table(invoices_df, index=True,
-               height=min(440, 90 + len(invoices_df) * 44),
+               height=min(440, 68 + len(invoices_df) * 40),
                wrap=["Vendor", "Invoice #"], formats={
     "Due": lambda v: "—" if v is None else str(v),
             }, cell_style={
