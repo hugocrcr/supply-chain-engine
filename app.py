@@ -2008,7 +2008,10 @@ with tab8:
     f'Showing {len(invoices_df)} invoice(s)</div>',
     unsafe_allow_html=True,
 )
-            sortable_table(invoices_df, index=True,
+            st.markdown('<div style="margin-bottom:-30px"></div>', unsafe_allow_html=True)
+        sortable_table(invoices_df, ...)
+        st.markdown('<div style="margin-top:-30px"></div>', unsafe_allow_html=True)
+        sortable_table(invoices_df, index=True,
                height=min(440, 68 + len(invoices_df) * 40),
                wrap=["Vendor", "Invoice #"], formats={
     "Due": lambda v: "—" if v is None else str(v),
