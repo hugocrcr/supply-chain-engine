@@ -1351,11 +1351,11 @@ with tab2:
             LIMIT 20
         """)
         if not top_dead.empty:
-            top_dead.columns = ["Product", "Stock", "Unit Cost", "Inventory Value", "Days of Supply"]
-            sortable_table(top_dead, index=True, height=520, wrap=["Product"], formats={
-                "Stock": "{:,.0f}", "Unit Cost": "${:,.2f}",
-                "Inventory Value": "${:,.0f}", "Days of Supply": "{:,.0f}",
-            })
+            top_dead.columns = ["Produit", "Stock", "Coût unitaire", "Valeur du stock", "Jours de stock"]
+            sortable_table(top_dead, index=True, height=520, wrap=["Produit"], formats={
+            "Stock": "{:,.0f}", "Coût unitaire": "${:,.2f}",
+            "Valeur du stock": "${:,.0f}", "Jours de stock": "{:,.0f}",
+        })
         else:
             alert_box("info", "Aucune donnée de stock dormant.")
     with detail_right:
@@ -1433,9 +1433,9 @@ with tab3:
             ORDER BY total_orders DESC
         """)
         if not otd_region.empty:
-            otd_region.columns = ["Region", "Total Orders", "OTD Rate %", "Avg Lead Time"]
+            otd_region.columns = ["Région", "Total commandes", "Taux OTD %", "Délai moyen"]
             sortable_table(otd_region, index=True, height=380, formats={
-    "Total Orders": "{:,.0f}", "OTD Rate %": "{:.1f}", "Avg Lead Time": "{:.2f}",
+    "Total commandes": "{:,.0f}", "Taux OTD %": "{:.1f}", "Délai moyen": "{:.2f}",
 })
         else:
             alert_box("info", "Aucune donnée de commande.")
@@ -1532,8 +1532,8 @@ with tab4:
 
     if not reorder_table.empty:
         reorder_table.columns = [
-            "Product", "Current Stock", "Avg Daily Demand", "Lead Time (days)",
-            "EOQ", "MOQ", "Reorder Point", "Days Until Stockout", "Action"
+            "Produit", "Stock actuel", "Demande quotidienne moyenne", "Délai de livraison (jours)",
+            "EOQ", "MOQ", "Point de commande", "Jours jusqu'à rupture", "Action"
         ]
 
         fcol1, fcol2 = st.columns([3, 1])
@@ -1541,21 +1541,21 @@ with tab4:
             reo_q = st.text_input("Search product", key="reo_search",
                                   placeholder="🔍  Filtrer par nom de produit…", label_visibility="collapsed")
         with fcol2:
-            actions = ["All actions"] + sorted(reorder_table["Action"].dropna().unique().tolist())
+            actions = ["Toutes les actions"] + sorted(reorder_table["Action"].dropna().unique().tolist())
             reo_act = st.selectbox("Action à mener", actions, key="reo_action", label_visibility="collapsed")
 
         view = reorder_table.copy()
         if reo_q:
-            view = view[view["Product"].astype(str).str.contains(reo_q, case=False, na=False)]
-        if reo_act != "All actions":
+            view = view[view["Produit"].astype(str).str.contains(reo_q, case=False, na=False)]
+        if reo_act and reo_act != "Toutes les actions":
             view = view[view["Action"] == reo_act]
 
         st.markdown(f'<div style="font-size:12px;color:#94a3b8;margin:2px 0 8px;">Showing {len(view)} of {len(reorder_table)} SKUs · click any column header to sort</div>', unsafe_allow_html=True)
-        sortable_table(view, height=620, wrap=["Product", "Action"], cell_style={
-            "Days Until Stockout": _bg_stockout, "Action": _bg_action,
+        sortable_table(view, height=620, wrap=["Produit", "Action"], cell_style={
+            "Jours jusqu'à rupture": _bg_stockout, "Action": _bg_action,
         }, formats={
-            "Current Stock": "{:,.0f}", "Avg Daily Demand": "{:,.1f}", "Lead Time (days)": "{:,.0f}",
-            "EOQ": "{:,.0f}", "MOQ": "{:,.0f}", "Reorder Point": "{:,.0f}", "Days Until Stockout": "{:,.0f}",
+            "Stock actuel": "{:,.0f}", "Demande quotidienne moyenne": "{:,.1f}", "Délai de livraison (jours)": "{:,.0f}",
+            "EOQ": "{:,.0f}", "MOQ": "{:,.0f}", "Point de commande": "{:,.0f}", "Jours jusqu'à rupture": "{:,.0f}",
         })
     else:
         alert_box("info", "Aucune donnée de réapprovisionnement disponible.")
@@ -1702,8 +1702,8 @@ with tab6:
         """)
 
         if not daily_kpis.empty:
-            daily_kpis.columns = ["Date", "Dead Stock", "Excess Stock",
-                                   "Total Inventory", "Stockout Cost", "OTD Rate"]
+            daily_kpis.columns = ["Date", "Stock dormant", "Stock excédentaire",
+                         "Stock total", "Coût de rupture", "Taux OTD"]
             daily_kpis["Date"] = daily_kpis["Date"].astype(str)
             sortable_table(daily_kpis, index=True, height=460, formats={
     "Stock dormant": "${:,.0f}", "Stock excédentaire": "${:,.0f}", "Stock total": "${:,.0f}",
@@ -1716,17 +1716,16 @@ with tab6:
         st.markdown("### Seuils d'alerte")
         st.markdown('<div style="font-size:13px;color:#64748b;margin-bottom:8px;">Current alert configuration (editable in the n8n workflow).</div>', unsafe_allow_html=True)
         thresholds = pd.DataFrame([
-            ["Dead Stock", "inventory_value > $5,000", "🟢 Active"],
-            ["Excess Stock", "excess_value > $5,000", "🟢 Active"],
-            ["Stockout Risk", "days_until_stockout < 14", "🟢 Active"],
-            ["Weekly Brief", "Every Monday 8am", "🟢 Active"],
-            ["AI Narrative Alerts", "Per-SKU recommendations", "🟢 Active"],
-        ], columns=["Alert Type", "Threshold", "Status"])
-        sortable_table(thresholds, wrap=["Threshold"], height=280)
+            ["Stock dormant", "inventory_value > $5,000", "🟢 Active"],
+            ["Stock excédentaire", "excess_value > $5,000", "🟢 Active"],
+            ["Risque de rupture", "days_until_stockout < 14", "🟢 Active"],
+            ["Résumé hebdomadaire", "Every Monday 8am", "🟢 Active"],
+            ["Alertes narratives IA", "Per-SKU recommendations", "🟢 Active"],
+        ], columns=["Type d'alerte", "Seuil", "Statut"])
+        sortable_table(thresholds, wrap=["Seuil"], height=280)
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7: DATA HEALTH
-# ══════════════════════════════════════════════════════════════════════════════
-
+# ════════════════════════════════════
 with tab7:
     st.subheader("🏥 Moniteur de santé des données")
     st.caption("Contrôles qualité des données en temps réel sur vos tables de commandes et de stock.")
@@ -1783,9 +1782,9 @@ with tab7:
         """)
 
         if not missing.empty:
-            missing.columns = ["Field", "Missing", "Total"]
-            sortable_table(missing, wrap=["Field"], height=320,
-               formats={"Missing": "{:,.0f}", "Total": "{:,.0f}"})
+            missing.columns = ["Champ", "Manquant", "Total"]
+            sortable_table(missing, wrap=["Champ"], height=320,
+               formats={"Manquant": "{:,.0f}", "Total": "{:,.0f}"})
 
     with health_right:
         st.markdown("### Doublons & valeurs aberrantes")
@@ -1798,8 +1797,8 @@ with tab7:
 
         if not dupes.empty:
             st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 6px;">Duplicate SKUs</div>', unsafe_allow_html=True)
-            dupes.columns = ["Product Name", "Count"]
-            sortable_table(dupes, wrap=["Product Name"], height=380, formats={"Count": "{:,.0f}"})
+            dupes.columns = ["Nom du produit", "Nombre"]
+            sortable_table(dupes, wrap=["Nom du produit"], height=380, formats={"Nombre": "{:,.0f}"})
         else:
             alert_box("success", "✅ Aucun SKU en doublon détecté")
 
@@ -1813,9 +1812,9 @@ with tab7:
 
         if not outliers.empty:
             st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:14px 0 6px;">Price Outliers (5x+ above average)</div>', unsafe_allow_html=True)
-            outliers.columns = ["Product", "Unit Cost"]
-            sortable_table(outliers, wrap=["Product"], height=380,
-               formats={"Unit Cost": "${:,.2f}"})
+            outliers.columns = ["Produit", "Coût unitaire"]
+            sortable_table(outliers, wrap=["Produit"], height=380,
+               formats={"Coût unitaire": "${:,.2f}"})
         else:
             alert_box("success", "✅ Aucune valeur aberrante de prix détectée")
 
@@ -1835,9 +1834,9 @@ with tab7:
         """)
 
         if not no_orders.empty:
-            no_orders.columns = ["Product", "Stock", "Value"]
-            sortable_table(no_orders, index=True, height=380, wrap=["Product"],
-               formats={"Stock": "{:,.0f}", "Value": "${:,.0f}"})
+            no_orders.columns = ["Produit", "Stock", "Valeur"]
+            sortable_table(no_orders, index=True, height=380, wrap=["Produit"],
+               formats={"Stock": "{:,.0f}", "Valeur": "${:,.0f}"})
             alert_box("warning", f"⚠️ {len(no_orders)} SKUs ont du stock mais aucun historique de commande")
         else:
             alert_box("success", "✅ Tous les SKUs en stock ont des commandes correspondantes")
@@ -1854,9 +1853,9 @@ with tab7:
         """)
 
         if not no_inv.empty:
-            no_inv.columns = ["Product", "Orders", "Revenue"]
-            sortable_table(no_inv, index=True, height=380, wrap=["Product"],
-               formats={"Orders": "{:,.0f}", "Revenue": "${:,.0f}"})
+            no_inv.columns = ["Produit", "Commandes", "Revenus"]
+            sortable_table(no_inv, index=True, height=380, wrap=["Produit"],
+               formats={"Commandes": "{:,.0f}", "Revenus": "${:,.0f}"})
             alert_box("warning", f"⚠️ {len(no_inv)} produits ont des commandes mais aucun enregistrement de stock")
         else:
             alert_box("success", "✅ Tous les produits commandés existent dans le stock")
