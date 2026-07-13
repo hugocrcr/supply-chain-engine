@@ -736,6 +736,7 @@ RÈGLES :
 7. Si une question est ambiguë, faites une hypothèse raisonnable et énoncez-la.
 8. Si on vous demande quelque chose qui n'est pas dans la base, dites quelles données seraient nécessaires.
 9. Répondez TOUJOURS en français, avec la ponctuation française (espaces avant : ; ! ?).
+10. Minimisez les appels d'outils. Combinez plusieurs métriques dans une seule requête SQL avec JOINs et CTEs plutôt que d'exécuter des requêtes séparées. Visez 1-2 requêtes par question, 3 maximum pour les plans stratégiques.
 
 Si la question demande un plan détaillé ou une analyse approfondie, structurez votre réponse en sections claires avec des tableaux markdown. Priorisez la profondeur sur les 3-5 SKUs/items les plus importants plutôt que de couvrir tous les éléments superficiellement.
 
@@ -834,7 +835,7 @@ def ask_claude(user_question, conversation_history, text_placeholder=None):
     messages.append({"role": "user", "content": user_question})
  
     dataframes = []
-    max_iterations = 4
+    max_iterations = 6
     model_used = None
  
     for _iteration in range(max_iterations):
