@@ -1706,13 +1706,13 @@ with tab6:
         """)
 
         if not daily_kpis.empty:
-            daily_kpis.columns = ["Date", "Stock dormant", "Stock excédentaire",
-                                   "Stock total", "Coût de rupture", "Taux OTD"]
+            daily_kpis.columns = ["Date", "Dead Stock", "Excess Stock",
+                                   "Total Inventory", "Stockout Cost", "OTD Rate"]
             daily_kpis["Date"] = daily_kpis["Date"].astype(str)
             sortable_table(daily_kpis, index=True, height=460, formats={
-    "Stock dormant": "${:,.0f}", "Stock excédentaire": "${:,.0f}", "Stock total": "${:,.0f}",
-    "Coût de rupture": "${:,.0f}", "Taux OTD": "{:.1f}%",
-})
+                "Dead Stock": "${:,.0f}", "Excess Stock": "${:,.0f}", "Total Inventory": "${:,.0f}",
+                "Stockout Cost": "${:,.0f}", "OTD Rate": "{:.1f}%",
+            })
         else:
             alert_box("info", "No KPI history yet. Run the n8n pipeline to start populating daily KPIs.")
 
@@ -1720,13 +1720,13 @@ with tab6:
         st.markdown("### Alert Thresholds")
         st.markdown('<div style="font-size:13px;color:#64748b;margin-bottom:8px;">Current alert configuration (editable in the n8n workflow).</div>', unsafe_allow_html=True)
         thresholds = pd.DataFrame([
-            ["Stock dormant", "inventory_value > $5,000", "🟢 Active"],
-            ["Stock excédentaire", "excess_value > $5,000", "🟢 Active"],
-            ["Risque de rupture", "days_until_stockout < 14", "🟢 Active"],
-            ["Résumé hebdomadaire", "Every Monday 8am", "🟢 Active"],
-            ["Alertes narratives IA", "Per-SKU recommendations", "🟢 Active"],
-        ], columns=["Type d'alerte", "Seuil", "Statut"])
-        sortable_table(thresholds, wrap=["Seuil"], height=280)
+            ["Dead Stock", "inventory_value > $5,000", "🟢 Active"],
+            ["Excess Stock", "excess_value > $5,000", "🟢 Active"],
+            ["Stockout Risk", "days_until_stockout < 14", "🟢 Active"],
+            ["Weekly Summary", "Every Monday 8am", "🟢 Active"],
+            ["AI Narrative Alerts", "Per-SKU recommendations", "🟢 Active"],
+        ], columns=["Alert Type", "Threshold", "Status"])
+        sortable_table(thresholds, wrap=["Threshold"], height=280)
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7: DATA HEALTH
 # ══════════════════════════════════
