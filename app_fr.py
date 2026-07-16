@@ -1213,7 +1213,7 @@ with tab1:
           <div style="display:flex; align-items:center; gap:8px; margin-bottom:13px;">
             <span style="width:24px;height:24px;border-radius:8px;background:rgba(255,255,255,0.2);
                   display:flex;align-items:center;justify-content:center;font-size:13px;">✦</span>
-            <span style="font-size:10px; font-weight:700; letter-spacing:0.12em;">AI ASSISTANT</span>
+            <span style="font-size:10px; font-weight:700; letter-spacing:0.12em;">ASSISTANT IA</span>
           </div>
           <p style="margin:0; font-size:13.5px; font-weight:500; line-height:1.55; color:rgba(255,255,255,0.94);">{insight}</p>
         </div>
