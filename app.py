@@ -1002,16 +1002,19 @@ st.markdown(
 
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "📊 Executive Dashboard",
-    "📦 Inventory Detail",
-    "🚚 Operations",
-    "🔄 Reorder Recommendations",
-    "🤖 AI Assistant",
-    "🔔 Alert History",
-    "🏥 Data Health",
-    "💰 Invoices",           # ← new
-])
+TAB_KEYS = [
+    ("exec", "📊 Executive Dashboard"),
+    ("inventory", "📦 Inventory Detail"),
+    ("ops", "🚚 Operations"),
+    ("reorder", "🔄 Reorder Recommendations"),
+    ("ai", "🤖 AI Assistant"),
+    ("alerts", "🔔 Alert History"),
+    ("health", "🏥 Data Health"),
+    ("invoices", "💰 Invoices"),
+]
+tab_labels = [label for _, label in TAB_KEYS]
+
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(tab_labels)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1192,7 +1195,7 @@ with tab1:
 
     with main_right:
         # ── AI Insight card (data-driven) ──────────────────────────────────
-        insight = "Dead stock is concentrating your working-capital risk. Prioritise the top categories for clearance to free cash."
+        insight = "Le stock dormant concentre votre risque en fonds de roulement. Priorisez la liquidation des principales catégories pour libérer du cash."
         try:
             if not dead_by_cat.empty:
                 tot = dead_by_cat["dead_value"].sum()
@@ -1220,38 +1223,38 @@ with tab1:
 
         st.markdown(
             '<div style="font-size:12px;color:#94a3b8;margin-top:2px;line-height:1.5;">'
-            '💬 Open the <b style="color:#6355ff;">AI Assistant</b> tab for a full clearance plan '
-            'or a turnover deep-dive.</div>',
+            '💬 Ouvrez l\'onglet <b style="color:#6355ff;">Assistant IA</b> pour un plan de liquidation complet '
+'ou une analyse détaillée de la rotation.</div>',
             unsafe_allow_html=True,
         )
         st.write("")
 
         # ── Recent Alerts (built from live data) ───────────────────────────
         alerts_html = ['<div class="aurora-panel" style="margin-bottom:16px;">',
-                       '<div class="rail-title"><h4>Recent Alerts</h4><span style="color:#94a3b8;font-weight:600;">live</span></div>']
+               '<div class="rail-title"><h4>Alertes récentes</h4><span style="color:#94a3b8;font-weight:600;">en direct</span></div>']
         tint = {"#e5484d": "#fdecec", "#f79009": "#fef3e2", "#3b82f6": "#eaf1fe"}
         rows = []
         try:
             top_dead = run_query("SELECT product_name, inventory_value FROM inventory WHERE is_dead_stock = true ORDER BY inventory_value DESC LIMIT 1")
             if not top_dead.empty:
                 r0 = top_dead.iloc[0]
-                rows.append((f"{r0['product_name']} flagged — {format_currency(r0['inventory_value'])} trapped", "Dead stock", "#e5484d", "live"))
+                rows.append((f"{r0['product_name']} signalé — {format_currency(r0['inventory_value'])} bloqués", "Stock dormant", "#e5484d", "en direct"))
         except Exception:
             pass
         try:
             top_wh = run_query("SELECT warehouse, SUM(excess_value) AS v FROM inventory WHERE is_excess = true GROUP BY warehouse ORDER BY v DESC LIMIT 1")
             if not top_wh.empty:
                 w0 = top_wh.iloc[0]
-                rows.append((f"{w0['warehouse']} holds the most excess — {format_currency(w0['v'])}", "Capacity", "#f79009", "live"))
+                rows.append((f"{w0['warehouse']} détient le plus d'excédent — {format_currency(w0['v'])}", "Capacité", "#f79009", "en direct"))
         except Exception:
             pass
         try:
             below = run_query("SELECT COUNT(*) AS c FROM inventory WHERE current_stock < reorder_point AND avg_daily_demand > 0")
             if not below.empty and int(below.iloc[0]["c"]) > 0:
-                rows.append((f"{int(below.iloc[0]['c'])} SKUs are below reorder point", "Stockout", "#e5484d", "live"))
+                rows.append((f"{int(below.iloc[0]['c'])} SKUs sous le seuil de réappro", "Rupture", "#e5484d", "en direct"))
         except Exception:
             pass
-        rows.append(("Daily KPI snapshot refreshed", "Forecast", "#3b82f6", "today"))
+        rows.append(("Instantané KPI quotidien actualisé", "Prévision", "#3b82f6", "aujourd'hui"))
 
         for text, tag, sev, when in rows:
             alerts_html.append(f"""
@@ -1270,7 +1273,7 @@ with tab1:
 
         # ── Reorder Recommendations (mini) ─────────────────────────────────
         reo_html = ['<div class="aurora-panel">',
-                    '<div class="rail-title"><h4>Reorder Recommendations</h4><span style="color:#94a3b8;font-weight:600;">top 4</span></div>']
+            '<div class="rail-title"><h4>Recommandations de réappro</h4><span style="color:#94a3b8;font-weight:600;">top 4</span></div>']
         pbg = {"#e5484d": "#fdecec", "#f79009": "#fef3e2", "#12b76a": "#e7f7ef"}
         try:
             reo = run_query("""
@@ -1286,11 +1289,11 @@ with tab1:
                 for _, rr in reo.iterrows():
                     dus = rr["dus"]
                     if dus < 14:
-                        pri, pc = "High", "#e5484d"
+                        pri, pc = "Haute", "#e5484d"
                     elif dus < 30:
-                        pri, pc = "Med", "#f79009"
+                        pri, pc = "Moy", "#f79009"
                     else:
-                        pri, pc = "Low", "#12b76a"
+                        pri, pc = "Basse", "#12b76a"
                     name = str(rr["product_name"])
                     if len(name) > 26:
                         name = name[:26] + "…"
@@ -1298,17 +1301,17 @@ with tab1:
                     <div class="reo-row">
                       <div style="flex:1; min-width:0;">
                         <div class="reo-name">{name}</div>
-                        <div class="reo-sub">{rr['warehouse']} · {dus:.0f}d left</div>
+                        <div class="reo-sub">{rr['warehouse']} · {dus:.0f}j restants</div>
                       </div>
                       <div style="text-align:right;">
-                        <div class="reo-qty">{rr['qty']:,.0f} <span style="font-weight:500;color:#a5aec4;">units</span></div>
+                        <div class="reo-qty">{rr['qty']:,.0f} <span style="font-weight:500;color:#a5aec4;">unités</span></div>
                         <span class="reo-pri" style="color:{pc};background:{pbg[pc]};">{pri}</span>
                       </div>
                     </div>""")
             else:
-                reo_html.append('<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">Nothing below reorder point right now.</p>')
+                reo_html.append('<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">Rien sous le seuil de réappro pour le moment.</p>')
         except Exception:
-            reo_html.append('<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">Reorder data unavailable.</p>')
+            reo_html.append('<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">Données de réappro indisponibles.</p>')
         reo_html.append("</div>")
         st.markdown("".join(reo_html), unsafe_allow_html=True)
 
@@ -1615,6 +1618,7 @@ with tab5:
             if st.button(sug, key=f"sug_{i}", use_container_width=True):
                 st.session_state.next_question = sug
                 st.session_state.next_question_id = str(uuid.uuid4())
+                st.query_params["tab"] = "ai"
  
     # ── Render conversation from state ───────────────────────────────
     for msg in st.session_state.ai_messages:
