@@ -1193,17 +1193,17 @@ with tab1:
 
     with main_right:
         # ── AI Insight card (data-driven) ──────────────────────────────────
-        insight = "Le stock dormant concentre votre risque de capital de travail. Priorisez les catégories principales pour libérer de la trésorerie."
+        insight = "Le stock dormant concentre votre risque en fonds de roulement. Priorisez la liquidation des principales catégories pour libérer du cash."
         try:
             if not dead_by_cat.empty:
                 tot = dead_by_cat["dead_value"].sum()
                 top3 = dead_by_cat.head(3)["dead_value"].sum()
                 share = (top3 / tot * 100) if tot else 0
                 names = dead_by_cat.head(2)["category"].tolist()
-                who = " and ".join(names) if names else "your top categories"
+                who = " et ".join(names) if names else "vos principales catégories"
                 recover = tot * 0.18
-                insight = (f"3 categories drive <b>{share:.0f}%</b> of dead stock. A markdown clearance on "
-                           f"{who} could recover <b>~{format_currency(recover)}</b> in working capital this quarter.")
+                insight = (f"3 catégories représentent <b>{share:.0f}%</b> du stock dormant. Une liquidation par remise sur "
+                   f"{who} pourrait libérer <b>~{format_currency(recover)}</b> de fonds de roulement ce trimestre.")
         except Exception:
             pass
 
