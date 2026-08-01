@@ -1,19 +1,14 @@
 """
-SupplyStack — Industrial Supply Chain Intelligence Engine
-Streamlit Dashboard + AI Assistant — INDUSTRIAL MODE
-
-Connects to Supabase Postgres (MECAPRO demo / industrial clients).
-Reads from the same DB that the n8n industrial pipeline writes to.
+SupplyStack — Supply Chain Intelligence Engine
+Streamlit Dashboard + AI Assistant
+Connects to Supabase Postgres. All data reads from the same DB that n8n writes to.
 
 ── UI: "Aurora" light theme ──────────────────────────────────────────────────
-Same visual system as the DTC dashboard: airy violet-accented light theme,
-KPI cards with status dot + traffic-light value + delta + sparkline, Aurora
-panels, sortable tables, 2:1 executive layout with right rail.
-
-── Client switches ───────────────────────────────────────────────────────────
-CLIENT_LANG   "fr" | "en"       — all UI labels
-CLIENT_NAME   display name
-CURRENCY      currency symbol used in every formatter
+Airy violet-accented light theme. KPI cards carry a status dot + traffic-light
+value color + day-over-day delta + sparkline. Charts restyled to the Aurora
+palette; warehouse mix shown as a donut; Executive tab uses a 2:1 layout with an
+Aurora right rail (AI insight, recent alerts, reorder recommendations).
+Only presentation changed — all DB queries and AI logic are unchanged.
 """
 
 import streamlit as st
@@ -23,35 +18,30 @@ import plotly.graph_objects as go
 import pandas as pd
 import psycopg2
 import re
-import uuid
+import json
+from psycopg2.extras import RealDictCursor
 from datetime import datetime, date, timedelta
 
-# ═══════════════════════════════════════════════════════════════════════════
-# CLIENT CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════
-CLIENT_LANG = "fr"                      # "fr" or "en"
-CLIENT_NAME = "MECAPRO Industries"
-CLIENT_INITIALS = "MI"
-CURRENCY = "€"
-
 # ── CONFIG ────────────────────────────────────────────────────────────────────
+
 st.set_page_config(
-    page_title=f"SupplyStack — {CLIENT_NAME}",
-    page_icon="🏭",
+    page_title="SupplyStack — Supply Chain Intelligence",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
 # ── CREDENTIALS ───────────────────────────────────────────────────────────────
+# Replace these two values with your own
+
 DB_CONFIG = {
-    "host": "aws-0-eu-central-1.pooler.supabase.com",
-    "port": 6543,
+    "host": "aws-1-eu-central-1.pooler.supabase.com",
+    "port": 5432,
     "database": "postgres",
-    "user": "postgres.aporcwacoxablxtuhndz",
-    "password": st.secrets["supabase_mecapro_password"],
-    "sslmode": "require",
-    "connect_timeout": 15,
-    "options": "-c statement_timeout=15000",
+    "user": "postgres.wnwuaeuifcdxncdbhjrj",
+    "password": st.secrets["supabase_password"],
+    "sslmode": "require", "connect_timeout": 15,
+    "options": "-c statement_timeout=8000",
 }
 
 ANTHROPIC_API_KEY = (st.secrets.get("anthropic_api_key", "")
@@ -59,9 +49,11 @@ ANTHROPIC_API_KEY = (st.secrets.get("anthropic_api_key", "")
 
 
 # ── SUPABASE CONNECTION ───────────────────────────────────────────────────────
+
 @st.cache_resource
 def get_connection():
-    """Persistent DB connection (autocommit — read-only workload)."""
+    """Create a persistent database connection (autocommit — read-only workload,
+    prevents one bad query from aborting the shared transaction)."""
     conn = psycopg2.connect(**DB_CONFIG)
     conn.autocommit = True
     return conn
@@ -72,7 +64,8 @@ def run_query(query):
     """Execute a SQL query and return results as a DataFrame."""
     conn = get_connection()
     try:
-        return pd.read_sql(query, conn)
+        df = pd.read_sql(query, conn)
+        return df
     except Exception as e:
         st.error(f"Database error: {e}")
         st.cache_resource.clear()
@@ -83,276 +76,28 @@ def run_query_uncached(query):
     """Execute a SQL query without caching (used by AI assistant)."""
     try:
         conn = get_connection()
+        # Test that connection is actually alive
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
-        return pd.read_sql(query, conn)
+        df = pd.read_sql(query, conn)
+        return df
     except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        # Connection is dead — clear cache and retry once
         st.cache_resource.clear()
         conn = get_connection()
-        return pd.read_sql(query, conn)
+        df = pd.read_sql(query, conn)
+        return df
     except Exception as e:
         st.cache_resource.clear()
         raise e
 
 
-def table_exists(name):
-    """Check whether a table exists in the public schema."""
-    try:
-        df = run_query(
-            "SELECT 1 FROM information_schema.tables "
-            f"WHERE table_schema='public' AND table_name='{name}' LIMIT 1"
-        )
-        return not df.empty
-    except Exception:
-        return False
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# LABELS (i18n)
-# ═══════════════════════════════════════════════════════════════════════════
-T_ALL = {
-    "fr": {
-        "header_sub": "Tableau de bord — Stocks et approvisionnements industriels",
-        "tab_exec": "📊 Tableau exécutif",
-        "tab_stock": "📦 Détail des stocks",
-        "tab_supplier": "🚚 Fournisseurs",
-        "tab_reorder": "🔄 Réapprovisionnement",
-        "tab_ai": "🤖 Assistant IA",
-        "tab_health": "🏥 Santé des données",
-        "tab_invoice": "💰 Factures",
-        "exec_title": "Vue exécutive",
-        "exec_sub": "Santé du fonds de roulement sur vos références, magasins et familles",
-        "legend_healthy": "Sain",
-        "legend_watch": "À surveiller",
-        "legend_risk": "À risque",
-        "kpi_dead": "Stock dormant",
-        "kpi_excess": "Stock excédentaire",
-        "kpi_total": "Stock total",
-        "kpi_holding": "Coût de détention / an",
-        "kpi_turnover": "Rotation des stocks",
-        "kpi_recover": "Cash récupérable",
-        "kpi_bfr": "BFR immobilisé",
-        "kpi_otd": "OTD fournisseurs",
-        "kpi_coverage": "Couverture moyenne",
-        "kpi_stockout": "Réfs à risque de rupture",
-        "chart_dead_family": "Valeur du stock dormant par famille",
-        "chart_type_mix": "Répartition par type d'article",
-        "chart_abcxyz": "Matrice ABC × XYZ",
-        "chart_trend": "Évolution du stock total",
-        "rail_ai": "ASSISTANT IA",
-        "rail_alerts": "Alertes récentes",
-        "rail_reorder": "Réappro prioritaires",
-        "live": "en direct",
-        "no_data": "Aucune donnée disponible.",
-        "run_pipeline": "Lancez le pipeline KPI quotidien pour alimenter la tendance.",
-        "not_enough_hist": "Pas assez d'historique pour afficher une tendance.",
-        "dead_refs": "Réfs dormantes",
-        "excess_refs": "Réfs excédentaires",
-        "below_rop": "Sous point de commande",
-        "abc_split": "Répartition ABC",
-        "top_dead": "Top 20 des références dormantes",
-        "coverage_dist": "Couverture vs valeur immobilisée",
-        "supplier_seg": "Segmentation automatique des fournisseurs",
-        "supplier_top": "Fournisseurs les plus à risque",
-        "supplier_detail": "Détail par fournisseur",
-        "reorder_table": "Références à réapprovisionner",
-        "search_product": "🔍  Filtrer par désignation ou code article…",
-        "all_actions": "Toutes les actions",
-        "all_types": "Tous les types",
-        "showing": "Affichage de",
-        "of": "sur",
-        "refs": "références",
-        "sort_hint": "cliquez sur un en-tête pour trier",
-        "ai_title": "🤖 Analyste supply chain industrielle",
-        "ai_caption": "Posez vos questions sur vos stocks, mouvements, commandes fournisseurs et paramètres ERP en langage naturel.",
-        "ai_test": "Tester la connexion à l'IA",
-        "ai_check": "🔌 Vérification de la connexion",
-        "ai_try": "Essayez de demander",
-        "ai_placeholder": "Posez une question sur vos données supply chain…",
-        "ai_send": "Envoyer",
-        "ai_clear": "🗑️ Effacer la conversation",
-        "ai_thinking": "Analyse de vos données…",
-        "ai_see_data": "📊 Voir les données",
-        "health_title": "🏥 Moniteur de santé des données",
-        "health_caption": "Contrôles qualité automatiques exécutés à chaque cycle d'ingestion.",
-        "health_freshness": "Fraîcheur des données",
-        "health_audit": "Audit qualité — dernier cycle",
-        "health_valuation": "Écart de valorisation vs ERP",
-        "health_params": "Paramètres ERP vs calculés",
-        "inv_title": "💰 Automatisation des comptes fournisseurs",
-        "inv_caption": "Factures fournisseurs capturées depuis la boîte mail. L'IA extrait les lignes et les rapproche de vos commandes fournisseurs.",
-        "col_product": "Désignation",
-        "col_code": "Code article",
-        "col_type": "Type",
-        "col_family": "Famille",
-        "col_warehouse": "Magasin",
-        "col_stock": "Stock",
-        "col_cost": "PMP",
-        "col_value": "Valeur",
-        "col_days_nomvt": "Jours sans mvt",
-        "col_coverage": "Couverture (j)",
-        "col_trapped": "Immobilisé",
-        "col_excess": "Excédent",
-        "col_action": "Action",
-        "col_supplier": "Fournisseur",
-        "col_orders": "Commandes",
-        "col_lt": "Délai réel (j)",
-        "col_ltstd": "Écart-type",
-        "col_cv": "Variabilité",
-        "col_otd": "OTD %",
-        "col_risk": "Score risque",
-        "col_category": "Catégorie",
-        "col_abc": "ABC",
-        "col_xyz": "XYZ",
-        "col_ss_erp": "SS ERP",
-        "col_ss_calc": "SS calculé",
-        "col_rop_erp": "PC ERP",
-        "col_rop_calc": "PC calculé",
-        "col_qty": "Qté à commander",
-        "col_days_out": "Jours avant rupture",
-        "act_liquidate": "Liquider",
-        "act_stop": "Stopper réappro",
-        "act_reorder": "Commander",
-        "act_hold": "Conserver",
-        "date_note": "Les niveaux de stock sont un instantané en direct. Les mouvements et commandes couvrent",
-    },
-    "en": {
-        "header_sub": "Dashboard — Industrial inventory and procurement",
-        "tab_exec": "📊 Executive",
-        "tab_stock": "📦 Inventory detail",
-        "tab_supplier": "🚚 Suppliers",
-        "tab_reorder": "🔄 Reordering",
-        "tab_ai": "🤖 AI Assistant",
-        "tab_health": "🏥 Data health",
-        "tab_invoice": "💰 Invoices",
-        "exec_title": "Executive view",
-        "exec_sub": "Working-capital health across your references, warehouses and families",
-        "legend_healthy": "Healthy",
-        "legend_watch": "Watch",
-        "legend_risk": "At risk",
-        "kpi_dead": "Dead stock",
-        "kpi_excess": "Excess stock",
-        "kpi_total": "Total inventory",
-        "kpi_holding": "Holding cost / year",
-        "kpi_turnover": "Inventory turnover",
-        "kpi_recover": "Recoverable cash",
-        "kpi_bfr": "Working capital tied",
-        "kpi_otd": "Supplier OTD",
-        "kpi_coverage": "Avg coverage",
-        "kpi_stockout": "Stockout-risk refs",
-        "chart_dead_family": "Dead stock value by family",
-        "chart_type_mix": "Breakdown by article type",
-        "chart_abcxyz": "ABC × XYZ matrix",
-        "chart_trend": "Total inventory trend",
-        "rail_ai": "AI ASSISTANT",
-        "rail_alerts": "Recent alerts",
-        "rail_reorder": "Priority reorders",
-        "live": "live",
-        "no_data": "No data available.",
-        "run_pipeline": "Run the daily KPI pipeline to populate the trend.",
-        "not_enough_hist": "Not enough history to show a trend.",
-        "dead_refs": "Dead refs",
-        "excess_refs": "Excess refs",
-        "below_rop": "Below reorder point",
-        "abc_split": "ABC split",
-        "top_dead": "Top 20 dead references",
-        "coverage_dist": "Coverage vs tied-up value",
-        "supplier_seg": "Automatic supplier segmentation",
-        "supplier_top": "Highest-risk suppliers",
-        "supplier_detail": "Supplier detail",
-        "reorder_table": "References to reorder",
-        "search_product": "🔍  Filter by description or article code…",
-        "all_actions": "All actions",
-        "all_types": "All types",
-        "showing": "Showing",
-        "of": "of",
-        "refs": "references",
-        "sort_hint": "click any column header to sort",
-        "ai_title": "🤖 Industrial supply chain analyst",
-        "ai_caption": "Ask about inventory, movements, purchase orders and ERP parameters in plain language.",
-        "ai_test": "Test AI connection",
-        "ai_check": "🔌 Connection check",
-        "ai_try": "Try asking",
-        "ai_placeholder": "Ask a question about your supply chain data…",
-        "ai_send": "Send",
-        "ai_clear": "🗑️ Clear conversation",
-        "ai_thinking": "Analysing your data…",
-        "ai_see_data": "📊 View data",
-        "health_title": "🏥 Data health monitor",
-        "health_caption": "Automated quality checks run on every ingestion cycle.",
-        "health_freshness": "Data freshness",
-        "health_audit": "Quality audit — latest run",
-        "health_valuation": "Valuation gap vs ERP",
-        "health_params": "ERP vs calculated parameters",
-        "inv_title": "💰 Accounts payable automation",
-        "inv_caption": "Supplier invoices captured from the inbox. AI extracts line items and matches them to your purchase orders.",
-        "col_product": "Description",
-        "col_code": "Article code",
-        "col_type": "Type",
-        "col_family": "Family",
-        "col_warehouse": "Warehouse",
-        "col_stock": "Stock",
-        "col_cost": "Unit cost",
-        "col_value": "Value",
-        "col_days_nomvt": "Days no mvt",
-        "col_coverage": "Coverage (d)",
-        "col_trapped": "Tied up",
-        "col_excess": "Excess",
-        "col_action": "Action",
-        "col_supplier": "Supplier",
-        "col_orders": "Orders",
-        "col_lt": "Actual LT (d)",
-        "col_ltstd": "Std dev",
-        "col_cv": "Variability",
-        "col_otd": "OTD %",
-        "col_risk": "Risk score",
-        "col_category": "Category",
-        "col_abc": "ABC",
-        "col_xyz": "XYZ",
-        "col_ss_erp": "SS ERP",
-        "col_ss_calc": "SS calc",
-        "col_rop_erp": "ROP ERP",
-        "col_rop_calc": "ROP calc",
-        "col_qty": "Qty to order",
-        "col_days_out": "Days to stockout",
-        "act_liquidate": "Liquidate",
-        "act_stop": "Stop reordering",
-        "act_reorder": "Reorder",
-        "act_hold": "Hold",
-        "date_note": "Stock levels are a live snapshot. Movements and orders cover",
-    },
-}
-T = T_ALL[CLIENT_LANG]
-
-# Article type display names
-TYPE_NAMES = {
-    "fr": {
-        "PF": "Produits finis", "SF": "Semi-finis", "COMP": "Composants",
-        "MP": "Matières premières", "CONS": "Consommables", "EMB": "Emballages",
-        "PDR": "Pièces de rechange", "NA": "Non classé",
-    },
-    "en": {
-        "PF": "Finished goods", "SF": "Semi-finished", "COMP": "Components",
-        "MP": "Raw materials", "CONS": "Consumables", "EMB": "Packaging",
-        "PDR": "Spare parts", "NA": "Unclassified",
-    },
-}
-TN = TYPE_NAMES[CLIENT_LANG]
-
-CATEGORY_NAMES = {
-    "fr": {
-        "critical": "Critique", "unstable": "Instable", "weak": "Faible",
-        "acceptable": "Acceptable", "solid": "Solide", "no_promised_data": "Données manquantes",
-    },
-    "en": {
-        "critical": "Critical", "unstable": "Unstable", "weak": "Weak",
-        "acceptable": "Acceptable", "solid": "Solid", "no_promised_data": "Missing data",
-    },
-}
-CN = CATEGORY_NAMES[CLIENT_LANG]
-
-
 # ── AURORA THEME / STYLING ────────────────────────────────────────────────────
+# Palette
+#   canvas   #f5f6fb   card #ffffff   ink #0f172a   muted #64748b / #94a3b8
+#   primary  #6355ff (violet)         gridlines #eef0f6
+#   status   danger #e5484d  warning #f79009  success #12b76a  info #3b82f6
+
 AURORA_PRIMARY = "#6355ff"
 STATUS = {
     "kpi-danger":  {"dot": "#e5484d", "val": "#e5484d", "spark": "#f4a8aa"},
@@ -372,6 +117,7 @@ st.markdown("""
     .stApp { background: #f5f6fb; }
     .block-container { padding-top: 1.6rem; padding-bottom: 2rem; max-width: 1500px; }
 
+    /* Headings */
     h1, h2, h3, .stSubheader { color: #0f172a !important; letter-spacing: -0.01em; }
     .stApp h3 { font-weight: 700; font-size: 16px !important; }
 
@@ -397,72 +143,96 @@ st.markdown("""
     .kpi-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
     .kpi-delta { font-size: 12px; font-weight: 700; }
 
+    /* status colors */
     .kpi-danger  .kpi-dot { background: #e5484d; } .kpi-danger  .kpi-value { color: #e5484d; }
     .kpi-warning .kpi-dot { background: #f79009; } .kpi-warning .kpi-value { color: #f79009; }
     .kpi-success .kpi-dot { background: #12b76a; } .kpi-success .kpi-value { color: #12b76a; }
     .kpi-info    .kpi-dot { background: #3b82f6; } .kpi-info    .kpi-value { color: #0f172a; }
     .kpi-card    .kpi-dot { background: #94a3b8; }
 
-    /* ── Aurora panel ────────────────────────────────────────────────────── */
+    /* ── Aurora panel (charts / rail cards) ──────────────────────────────── */
     .aurora-panel {
         background: #ffffff; border: 1px solid rgba(15,23,42,0.06);
         border-radius: 18px; padding: 18px 20px;
         box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 16px 36px -26px rgba(15,23,42,0.2);
     }
+
+    /* Plotly containers -> match panel look */
     .stPlotlyChart {
         background: #ffffff; border: 1px solid rgba(15,23,42,0.06);
         border-radius: 18px; padding: 14px 16px;
         box-shadow: 0 1px 2px rgba(15,23,42,0.04), 0 16px 36px -26px rgba(15,23,42,0.2);
     }
+
+    /* Dataframes */
     [data-testid="stDataFrame"] { border-radius: 14px; overflow: hidden; border: 1px solid rgba(15,23,42,0.06); }
 
-    /* ── Tabs ────────────────────────────────────────────────────────────── */
+    /* ── Tabs -> Aurora violet underline ─────────────────────────────────── */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 26px; border-bottom: 1px solid rgba(15,23,42,0.08); background: transparent;
+        gap: 26px; border-bottom: 1px solid rgba(15,23,42,0.08);
+        background: transparent;
     }
-    .stTabs [data-baseweb="tab"] { padding: 12px 0; font-size: 13.5px; font-weight: 600; color: #64748b; }
+    .stTabs [data-baseweb="tab"] {
+        padding: 12px 0; font-size: 13.5px; font-weight: 600; color: #64748b;
+    }
     .stTabs [aria-selected="true"] { color: #6355ff !important; }
     .stTabs [data-baseweb="tab-highlight"] { background-color: #6355ff !important; height: 2.5px; }
     .stTabs [data-baseweb="tab-border"] { background-color: transparent; }
 
+    /* Buttons (suggestions / actions) */
     .stButton > button {
         border-radius: 11px; border: 1px solid rgba(15,23,42,0.08);
         background: #ffffff; color: #475569; font-weight: 600; font-size: 12.5px;
     }
     .stButton > button:hover { border-color: #6355ff; color: #6355ff; }
 
+    /* hide Streamlit chrome */
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
 
     /* ═══ KILL THE SCRIPT-RUNNING DIM OVERLAY ══════════════════════════════ */
+    /* Streamlit dims the whole page during script runs — override it */
     .stApp[data-scriptrunstate="running"],
     .stApp[data-scriptrunstate="rerunning"],
-    .stApp[data-teststate="running"] { opacity: 1 !important; }
+    .stApp[data-teststate="running"] {
+        opacity: 1 !important;
+    }
     .stApp[data-scriptrunstate="running"] .main,
     .stApp[data-scriptrunstate="rerunning"] .main,
     .stApp[data-scriptrunstate="running"] section[data-testid="stMain"],
     .stApp[data-scriptrunstate="rerunning"] section[data-testid="stMain"],
     .stApp[data-teststate="running"] section[data-testid="stMain"] {
-        opacity: 1 !important; filter: none !important; pointer-events: auto !important;
+        opacity: 1 !important;
+        filter: none !important;
+        pointer-events: auto !important;
     }
+    /* Nuke the running-status widget entirely */
     [data-testid="stStatusWidget"] { display: none !important; }
     div[data-testid="stToolbar"] { display: none !important; }
-
-    @keyframes fadeInUp { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    /* Fade-in animation for streamed answers so they feel snappier */
+    @keyframes fadeInUp {
+        from { opacity: 0; transform: translateY(4px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
     [data-testid="stChatMessage"] { animation: fadeInUp 0.25s ease-out; }
-
+    /* Catch all Streamlit rerun state variants across versions */
     .stApp[data-script-run-state="running"],
     .stApp[data-script-run-state="rerunning"],
     body[data-scriptrunstate="running"],
-    body[data-scriptrunstate="rerunning"] { opacity: 1 !important; }
-
+    body[data-scriptrunstate="rerunning"] {
+        opacity: 1 !important;
+    }
+    /* Prevent buttons from graying out during their own click's rerun */
     .stButton > button:focus:not(:active),
     .stButton > button[data-testid="baseButton-secondary"]:disabled {
-        opacity: 1 !important; color: #475569 !important; background: #ffffff !important;
+        opacity: 1 !important;
+        color: #475569 !important;
+        background: #ffffff !important;
     }
+    /* Kill any global overlay div Streamlit might inject */
     div[data-testid="stAppViewBlockContainer"] { opacity: 1 !important; }
     iframe[title="streamlit_dim"] { display: none !important; }
-
-    /* ── Force LIGHT on native widgets ───────────────────────────────────── */
+            
+    /* ── Force LIGHT on native widgets (defensive — in case base theme is not applied) ─ */
     [data-testid="stDataFrame"], [data-testid="stTable"] { background:#ffffff !important; }
     div[data-baseweb="select"] > div { background:#ffffff !important; border-color:rgba(15,23,42,0.12) !important; }
     div[data-baseweb="select"] * { color:#0f172a !important; -webkit-text-fill-color:#0f172a !important; }
@@ -499,41 +269,49 @@ st.markdown("""
     .reo-sub { font-size:11px; font-weight:500; color:#94a3b8; }
     .reo-qty { font-size:12.5px; font-weight:700; color:#0f172a; text-align:right; }
     .reo-pri { font-size:9.5px; font-weight:600; text-transform:uppercase; padding:2px 8px; border-radius:5px; display:inline-block; margin-top:4px; }
-
-    iframe[title*="streamlit"] { display: block; margin-bottom: -8px !important; }
-    div:has(> iframe[title*="streamlit"]) + div { margin-top: 0 !important; }
-    div:has(> iframe[title*="streamlit"]) + div [data-testid="stExpander"] { margin-top: -20px !important; }
+    /* Kill spacing between sortable_table iframes and following expanders */
+    iframe[title*="streamlit"] {
+        display: block;
+        margin-bottom: -8px !important;
+    }
+    div:has(> iframe[title*="streamlit"]) + div {
+        margin-top: 0 !important;
+    }
+    div:has(> iframe[title*="streamlit"]) + div [data-testid="stExpander"] {
+        margin-top: -20px !important;
+    }     
 </style>
 """, unsafe_allow_html=True)
 
-
 # ── HELPER FUNCTIONS ──────────────────────────────────────────────────────────
+
 def format_currency(value):
     if value is None or pd.isna(value):
-        return f"0 {CURRENCY}"
-    value = float(value)
+        return "$0"
     if abs(value) >= 1_000_000:
-        return f"{value / 1_000_000:,.2f} M{CURRENCY}"
+        return f"${value / 1_000_000:,.2f}M"
     elif abs(value) >= 1_000:
-        return f"{value / 1_000:,.0f} k{CURRENCY}"
-    return f"{value:,.0f} {CURRENCY}"
+        return f"${value / 1_000:,.1f}K"
+    else:
+        return f"${value:,.0f}"
 
 
 def format_number(value, decimals=0):
     if value is None or pd.isna(value):
         return "0"
     if decimals == 0:
-        return f"{value:,.0f}".replace(",", " ")
-    return f"{value:,.{decimals}f}".replace(",", " ")
+        return f"{value:,.0f}"
+    return f"{value:,.{decimals}f}"
 
 
 def format_pct(value):
     if value is None or pd.isna(value):
-        return "—"
-    return f"{float(value):.1f}%"
+        return "0%"
+    return f"{value:.1f}%"
 
 
 def sparkline_svg(series, color, w=74, h=24):
+    """Tiny inline sparkline from a numeric series (returns '' if not enough data)."""
     try:
         vals = [float(v) for v in series if v is not None and not pd.isna(v)]
     except (TypeError, ValueError):
@@ -555,6 +333,7 @@ def sparkline_svg(series, color, w=74, h=24):
 
 
 def kpi_card(label, value, card_class="", delta="", delta_color="", spark="", small=False):
+    """Aurora KPI card: status dot + label, big traffic-light value, delta + sparkline."""
     foot = ""
     if delta or spark:
         dcol = delta_color or "#64748b"
@@ -571,16 +350,15 @@ def kpi_card(label, value, card_class="", delta="", delta_color="", spark="", sm
 
 
 def style_fig(fig, height=360, legend=False):
+    """Apply the Aurora chart look to any Plotly figure."""
     fig.update_layout(
         height=height,
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(family="Plus Jakarta Sans, sans-serif", color="#334155", size=12.5),
         margin=dict(l=0, r=12, t=10, b=34),
-        xaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6", automargin=True,
-                   tickfont=dict(color="#475569", size=12), title_font=dict(color="#64748b", size=12)),
-        yaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6", automargin=True,
-                   tickfont=dict(color="#334155", size=12.5), title_font=dict(color="#64748b", size=12)),
+        xaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6", automargin=True, tickfont=dict(color="#475569", size=12), title_font=dict(color="#64748b", size=12)),
+        yaxis=dict(gridcolor="#eef0f6", zeroline=False, linecolor="#eef0f6", automargin=True, tickfont=dict(color="#334155", size=12.5), title_font=dict(color="#64748b", size=12)),
         showlegend=legend,
         legend=dict(orientation="h", yanchor="bottom", y=-0.22, x=0, font=dict(size=11.5, color="#334155")),
         hoverlabel=dict(bgcolor="#0f172a", font=dict(color="#fff", family="Plus Jakarta Sans")),
@@ -593,15 +371,11 @@ def _esc(v):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _attr(s):
-    return _esc(str(s)).replace('"', "&quot;")
-
-
 def render_table(df, formats=None, aligns=None, cell_style=None, index=False,
                  height=None, wrap=None, zebra=True):
+    """Render a DataFrame as a light, theme-proof HTML table (Aurora styling)."""
     if df is None or len(df) == 0:
-        st.markdown(f'<div style="padding:14px;color:#94a3b8;font-size:13px;">{T["no_data"]}</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<div style="padding:14px;color:#94a3b8;font-size:13px;">No data.</div>', unsafe_allow_html=True)
         return
     formats = formats or {}
     aligns = aligns or {}
@@ -667,11 +441,16 @@ def render_table(df, formats=None, aligns=None, cell_style=None, index=False,
     )
 
 
+def _attr(s):
+    return _esc(str(s)).replace('"', "&quot;")
+
+
 def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560,
                    wrap=None, index=False):
-    """Light HTML table with Excel-style click-to-sort column headers."""
+    """Light HTML table with Excel-style click-to-sort column headers (arrows).
+    Set index=True to include a leading '#' row-number column."""
     if df is None or len(df) == 0:
-        st.markdown(f'<div style="padding:14px;color:#94a3b8;font-size:13px;">{T["no_data"]}</div>',
+        st.markdown('<div style="padding:14px;color:#94a3b8;font-size:13px;">No data.</div>',
                     unsafe_allow_html=True)
         return
     formats = formats or {}
@@ -679,13 +458,13 @@ def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560,
     cell_style = cell_style or {}
     wrap = set(wrap or [])
     cols = list(df.columns)
-
+ 
     def isnum(c):
         try:
             return pd.api.types.is_numeric_dtype(df[c])
         except Exception:
             return False
-
+ 
     def disp(c, v):
         if v is None or (isinstance(v, float) and pd.isna(v)):
             return ""
@@ -696,7 +475,8 @@ def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560,
             return _esc(f(v)) if callable(f) else _esc(f.format(v))
         except Exception:
             return _esc(v)
-
+ 
+    # Header row
     ths = ""
     col_offset = 1 if index else 0
     if index:
@@ -708,7 +488,8 @@ def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560,
         ths += ('<th onclick="sortT(%d)" style="text-align:%s;">%s'
                 '<span class="arw" id="arw%d">&#8597;</span></th>'
                 % (actual_j, al, _esc(c), actual_j))
-
+ 
+    # Body rows
     trs = ""
     for i, (_, r) in enumerate(df.iterrows()):
         tds = ""
@@ -728,11 +509,12 @@ def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560,
                     extra = cell_style[c](v) or ""
                 except Exception:
                     extra = ""
-            ws = ("white-space:normal;word-break:break-word;" if c in wrap else "white-space:nowrap;")
+            ws = ("white-space:normal;word-break:break-word;"
+                  if c in wrap else "white-space:nowrap;")
             tds += ('<td data-v="%s" style="text-align:%s;%s%s">%s</td>'
                     % (dv, al, ws, extra, disp(c, v)))
         trs += "<tr>%s</tr>" % tds
-
+ 
     css = """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap');
@@ -747,7 +529,7 @@ def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560,
     tr:nth-child(even) td{background:#fbfbfe;}
     </style>
     """ % int(height - 20)
-
+ 
     script = """
     <script>
     function sortT(col){
@@ -770,7 +552,7 @@ def sortable_table(df, formats=None, aligns=None, cell_style=None, height=560,
     }
     </script>
     """
-
+ 
     html = (css + '<div class="wrap"><table id="st"><thead><tr>' + ths
             + '</tr></thead><tbody>' + trs + '</tbody></table></div>' + script)
     components.html(html, height=height, scrolling=False)
@@ -791,7 +573,7 @@ def alert_box(kind, text):
     )
 
 
-def _bg_days_out(v):
+def _bg_stockout(v):
     try:
         v = float(v)
     except (TypeError, ValueError):
@@ -805,78 +587,46 @@ def _bg_days_out(v):
 
 def _bg_action(v):
     s = str(v)
-    if s in (T["act_reorder"], "Reorder", "Commander"):
+    if "Reorder" in s:
         return "background:#fdecec;color:#b42318;font-weight:700;"
-    if s in (T["act_liquidate"], "Liquidate", "Liquider"):
-        return "background:#fef3e2;color:#a15c07;font-weight:700;"
-    if s in (T["act_stop"], "Stop reordering", "Stopper réappro"):
+    if "Discount" in s:
         return "background:#fef3e2;color:#a15c07;font-weight:700;"
     return "background:#e7f7ef;color:#0f7a4d;"
 
 
-def _bg_category(v):
-    s = str(v)
-    if s in ("critical", CN["critical"]):
-        return "background:#fdecec;color:#b42318;font-weight:700;"
-    if s in ("unstable", CN["unstable"]):
-        return "background:#fef0e6;color:#b45309;font-weight:700;"
-    if s in ("weak", CN["weak"]):
-        return "background:#fef3e2;color:#a15c07;font-weight:600;"
-    if s in ("acceptable", CN["acceptable"]):
-        return "background:#eaf1fe;color:#1d4ed8;font-weight:600;"
-    if s in ("solid", CN["solid"]):
-        return "background:#e7f7ef;color:#0f7a4d;font-weight:600;"
-    return ""
-
-
-def _bg_variance(v):
-    try:
-        v = float(v)
-    except (TypeError, ValueError):
-        return ""
-    if abs(v) > 20:
-        return "background:#fdecec;color:#b42318;font-weight:700;"
-    if abs(v) > 5:
-        return "background:#fef3e2;color:#a15c07;font-weight:600;"
-    return ""
-
-
 @st.cache_data(ttl=300)
 def get_kpi_history():
-    """Recent daily industrial KPI snapshots for sparklines + deltas."""
+    """Recent daily KPI snapshots for sparklines + day-over-day deltas."""
     return run_query("""
-        SELECT kpi_date, dead_stock_value, excess_stock_value, total_stock_value,
-               annual_holding_cost, working_capital_tied, recoverable_cash_est,
-               stock_turnover_ratio, supplier_otd_rate, avg_coverage_days
-        FROM daily_kpis_industrial
+        SELECT kpi_date, dead_stock_value, excess_stock_value, total_inventory_value,
+               holding_cost_monthly, stockout_cost, inventory_turnover
+        FROM daily_kpis
         ORDER BY kpi_date ASC
         LIMIT 60
     """)
 
 
 def kpi_deltas(hist):
-    """Day-over-day delta per metric -> {key: (text, color)}."""
+    """Day-over-day delta per metric -> {key: (text, color)}. Empty if <2 snapshots."""
     out = {}
     if hist is None or hist.empty or len(hist) < 2:
         return out
     last, prev = hist.iloc[-1], hist.iloc[-2]
+    # good_down=True => a decrease is good (cost/risk metrics)
     spec = {
-        "dead_stock_value": True, "excess_stock_value": True,
-        "annual_holding_cost": True, "working_capital_tied": True,
-        "recoverable_cash_est": None, "stock_turnover_ratio": False,
-        "total_stock_value": None, "supplier_otd_rate": False,
-        "avg_coverage_days": True,
+        "dead_stock_value": True, "excess_stock_value": True, "holding_cost_monthly": True,
+        "stockout_cost": True, "inventory_turnover": False, "total_inventory_value": None,
     }
     for col, good_down in spec.items():
         try:
             a, b = prev.get(col), last.get(col)
             if a in (None, 0) or pd.isna(a) or pd.isna(b):
                 continue
-            pct = (float(b) - float(a)) / abs(float(a)) * 100
+            pct = (b - a) / abs(a) * 100
             up = pct >= 0
             arrow = "↑" if up else "↓"
             if good_down is None:
-                color = "#64748b"
+                color = "#64748b"  # neutral (total inventory value)
             else:
                 good = (not up) if good_down else up
                 color = "#12b76a" if good else "#e5484d"
@@ -887,9 +637,12 @@ def kpi_deltas(hist):
 
 
 # ── AI ASSISTANT: SAFETY + TOOLS ─────────────────────────────────────────────
+
 def is_safe_query(sql):
-    """Only allow read-only SELECT queries."""
-    sql_clean = sql.strip().lower().split(";")[0]
+    """Only allow read-only SELECT queries. Block anything destructive."""
+    sql_clean = sql.strip().lower()
+    # Remove trailing semicolons and anything after them
+    sql_clean = sql_clean.split(";")[0]
     if not sql_clean.startswith("select") and not sql_clean.startswith("with"):
         return False
     forbidden = [
@@ -897,156 +650,106 @@ def is_safe_query(sql):
         r"\balter\b", r"\bcreate\b", r"\btruncate\b", r"\bgrant\b",
         r"\brevoke\b", r"\bexec\b", r"\bexecute\b",
     ]
-    return not any(re.search(p, sql_clean) for p in forbidden)
+    for pattern in forbidden:
+        if re.search(pattern, sql_clean):
+            return False
+    return True
 
 
 DATABASE_SCHEMA = """
-DATABASE SCHEMA (PostgreSQL / Supabase) — INDUSTRIAL MODE:
+DATABASE SCHEMA (PostgreSQL / Supabase):
 
-TABLE: inventory  (one row per article × warehouse)
-- article_code (text) — ERP article reference
-- product_name (text) — description
-- sku (text) — same as article_code, unique key
-- article_type (text) — PF (finished goods) / SF (semi-finished) / COMP (components)
-    / MP (raw materials) / CONS (consumables) / EMB (packaging) / PDR (spare parts) / NA
-- article_family (text), category (text) — product family
-- warehouse (text) — storage location
-- current_stock (numeric), stock_available, stock_reserved, stock_blocked, stock_in_qc
-- unit_of_measure (text)
-- unit_cost (numeric) — weighted average cost (PMP/CMUP)
-- unit_price (numeric) — selling price
-- erp_stock_value (numeric) — valuation as reported by the ERP
-- moq (numeric), order_multiple (numeric)
-- erp_safety_stock, erp_reorder_point, erp_lead_time_days — parameters AS SET IN THE ERP
-- supplier_name (text)
-- last_movement_date (timestamp), days_since_movement (int)
-- avg_daily_consumption (numeric) — from issue movements over 365d
-- consumption_stddev (numeric), coefficient_variation (numeric)
-- coverage_days (numeric) — current_stock / avg_daily_consumption
-- abc_class (text) — A/B/C by annual consumption value (Pareto 80/15/5)
-- xyz_class (text) — X (CV<0.5 regular) / Y (0.5-1.0) / Z (>1.0 erratic)
-- actual_lead_time_days (numeric) — MEASURED from real receipts
-- lead_time_stddev (numeric) — lead time variability, drives safety stock
-- calculated_safety_stock, calculated_reorder_point — OUR recomputed values
-- is_dead_stock (bool) — no movement beyond the threshold for its article_type
-- is_excess (bool) — coverage above the type's target
-- is_stockout_risk (bool) — coverage below the type's alert level
-- trapped_value (numeric) — value locked in dead stock
-- excess_value (numeric) — value above target coverage
-- annual_holding_cost (numeric) — value × holding rate for its type
+TABLE: orders
+- id (serial, primary key)
+- order_id (text) — order identifier
+- order_date (timestamp) — when the order was placed
+- product_name (text)
+- category (text)
+- quantity (integer) — units ordered
+- unit_price (numeric) — price per unit
+- total_amount (numeric) — total order value
+- customer_segment (text) — Consumer / Corporate / Home Office
+- market (text) — geographic market
+- order_region (text)
+- shipping_mode (text) — Standard Class / First Class / Second Class / Same Day
+- days_for_shipping_real (integer) — actual delivery days
+- days_for_shipping_scheduled (integer) — promised delivery days
+- delivery_status (text) — Late delivery / Shipping on time / Advance shipping / Shipping canceled
+- late_delivery_risk (integer) — 1 if late, 0 if on time
 
-TABLE: article_types  (thresholds per article type — this is what makes the analysis smart)
-- code (text) — PF / SF / COMP / MP / CONS / EMB / PDR / NA
-- label_fr, label_en (text)
-- dead_stock_days (int) — dormancy threshold; PDR = 1095 days (3y), PF = ~180
-- target_coverage_days (int) — target coverage
-- stockout_alert_days (int) — alert level
-- holding_cost_rate (numeric) — annual holding cost rate
+TABLE: inventory
+- id (serial, primary key)
+- stock_code (text) — SKU identifier
+- product_name (text)
+- category (text)
+- unit_cost (numeric) — cost per unit
+- current_stock (numeric) — units on hand
+- inventory_value (numeric) — current_stock * unit_cost
+- reorder_point (numeric) — stock level that triggers reorder
+- supplier_lead_time_days (numeric) — days from PO to delivery
+- warehouse (text) — Warehouse A - East / Warehouse B - Central / Warehouse C - West
+- avg_daily_demand (numeric) — average units sold per day
+- days_of_supply (numeric) — current_stock / avg_daily_demand
+- total_qty_sold (numeric) — lifetime units sold
+- optimal_stock (numeric) — avg_daily_demand * lead_time * 1.5
+- excess_units (numeric) — units above optimal stock
+- excess_value (numeric) — excess_units * unit_cost
+- is_dead_stock (boolean) — true if 180+ days of supply or no sales
+- is_excess (boolean) — true if stock exceeds optimal level
+- abc_class (text) — A (top 80% revenue) / B (next 15%) / C (last 5%)
 
-TABLE: stock_movements  (~75k rows, 12 months of history)
-- movement_id (text, unique), movement_date (timestamp)
-- article_code (text), article_name (text)
-- movement_type (text) — issue / receipt / transfer / adjustment / scrap
-- quantity (numeric, always positive), unit_of_measure, warehouse
-- document_ref, document_type, unit_cost
-
-TABLE: purchase_orders  (~3k lines)
-- po_id (text), po_line (int) — unique together
-- order_date (date), promised_date (date), received_date (date)
-- supplier_name (text), supplier_code (text)
-- article_code, article_name
-- quantity_ordered, quantity_received, unit_of_measure, unit_price, currency
-- po_status (text)
-
-TABLE: orders  (customer orders)
-- order_id (text), order_date (timestamp), product_name, category
-- quantity, unit_price, total_amount, customer_segment, order_region
-
-TABLE: daily_kpis_industrial  (one snapshot row per day)
+TABLE: daily_kpis
+- id (serial, primary key)
 - kpi_date (date)
-- total_stock_value, total_stock_value_erp, valuation_gap_pct
-- dead_stock_value, dead_stock_ref_count, dead_stock_pct
-- excess_stock_value, excess_stock_ref_count
-- working_capital_tied, annual_holding_cost, recoverable_cash_est
-- stock_turnover_ratio, avg_coverage_days
-- stockout_ref_count, stockout_risk_ref_count
-- supplier_otd_rate, avg_lead_time_deviation
-- total_active_refs, movements_count_24h
+- dead_stock_value (numeric)
+- excess_stock_value (numeric)
+- total_inventory_value (numeric)
+- holding_cost_monthly (numeric)
+- stockout_cost (numeric)
+- supplier_otd_rate (numeric) — percentage
+- avg_lead_time (numeric)
+- lead_time_variance (numeric)
+- inventory_turnover (numeric)
+- total_orders (integer)
+- total_revenue (numeric)
 
-TABLE: data_quality_log
-- audit_date, table_name, issue_code, issue_label_en, issue_label_fr
-- affected_rows (int), severity (text: 'critical' | 'warning')
-
-VIEW: v_supplier_scorecard_robust  (supplier segmentation, works even without promised_date)
-- supplier_name, commandes_total
-- lt_moyen (avg lead time), lt_stddev, cv_lead_time (variability coefficient)
-- pct_avec_promised, otd_when_measurable, pct_livraison_partielle
-- risk_score (0-100, higher = worse)
-- supplier_category — critical / unstable / weak / acceptable / solid / no_promised_data
-
-OTHER VIEWS: v_dead_stock, v_excess_stock, v_stockout_risk, v_abc_xyz_matrix, v_parameter_drift
-
-KEY DEFINITIONS (industrial context):
-- Dead stock: no movement beyond the article type's own threshold. Spare parts (PDR)
-  legitimately sit 3 years without moving — flagging them as dead is a classic false positive.
-- Safety stock formula used: SS = Z × sqrt(LT × sigma_demand² + demand² × sigma_LT²)
-  with Z = 2.05 (class A), 1.65 (B), 1.28 (C).
-- Lead time VARIABILITY (lt_stddev / cv_lead_time), not the average, is what drives
-  required safety stock. Most SMEs set "2 weeks" once and never revisit it.
-- Parameter drift: gap between erp_lead_time_days and actual_lead_time_days, or between
-  erp_safety_stock and calculated_safety_stock. Large gaps mean the ERP is placing
-  orders on stale assumptions.
-- OTD: received_date <= promised_date. Below 85% is weak, below 70% is a real problem.
-- Recoverable cash: 55% of dead stock value (liquidation discount) + 85% of excess
-  (you just stop reordering).
+KPI DEFINITIONS:
+- Dead Stock: inventory with 180+ days of supply or zero sales — trapped cash
+- Excess Stock: inventory above optimal level (avg_daily_demand × lead_time × 1.5 safety factor)
+- Holding Cost: 25% of inventory value per year (storage, insurance, capital cost, obsolescence)
+- EOQ (Economic Order Quantity): SQRT((2 × annual_demand × 50) / (unit_cost × 0.25)) — assumes $50 order cost
+- Stockout Cost: avg_daily_demand × 30 days × unit_cost for SKUs below reorder point
+- OTD Rate: % of orders where late_delivery_risk = 0
 """
 
-if CLIENT_LANG == "fr":
-    SYSTEM_PROMPT = f"""Vous êtes l'analyste IA intégré à SupplyStack, une plateforme d'intelligence supply chain destinée aux PME et ETI industrielles. Vous répondez aux questions sur les stocks, mouvements, commandes fournisseurs et paramètres ERP du client en interrogeant sa base de données en direct.
+SYSTEM_PROMPT = f"""Vous êtes l'analyste IA intégré à SupplyStack, une plateforme d'intelligence supply chain pour les marques e-commerce et DTC. Vous répondez aux questions sur les stocks, commandes, fournisseurs et opérations du client en interrogeant sa base de données en direct.
 
 {DATABASE_SCHEMA}
 
 RÈGLES :
 1. Utilisez l'outil query_database pour répondre avec des données réelles. N'inventez jamais de chiffres.
 2. Seules les requêtes SELECT sont autorisées. L'outil rejette tout le reste.
-3. Donnez des réponses concrètes et actionnables avec des montants chiffrés en euros. Ne vous contentez pas de rapporter les chiffres — interprétez-les et recommandez des actions.
-4. Raisonnez en industriel, pas en e-commerce. Une pièce de rechange qui ne bouge pas pendant 2 ans est normale ; un produit fini qui ne bouge pas 6 mois est un problème. Utilisez toujours article_types pour contextualiser un seuil.
-5. Reliez les métriques entre elles : une forte variabilité de délai fournisseur (lt_stddev) impose un stock de sécurité plus élevé ; un paramètre ERP obsolète cause à la fois du surstock et des ruptures ; les articles classés Z ne peuvent pas être pilotés par une formule standard.
-6. Formatez les montants clairement (12 400 € plutôt que 12400.0).
-7. Réponses concises — 2 à 4 paragraphes courts. Commencez par la réponse, puis le contexte, puis la recommandation.
-8. Si une question est ambiguë, faites une hypothèse raisonnable et énoncez-la.
-9. Si la donnée manque, dites précisément quelle colonne ou quel export ERP serait nécessaire.
-10. Répondez TOUJOURS en français, avec la ponctuation française.
-11. LIMITE STRICTE : 2 requêtes SQL maximum par réponse. Après 2 requêtes, vous DEVEZ répondre avec les données disponibles.
-12. Pour les questions larges, posez UNE requête exhaustive avec JOINs et CTEs plutôt que d'enchaîner les allers-retours.
-13. Utilisez le vocabulaire métier français : référence, article, famille, magasin, dépôt, PMP, point de commande, stock de sécurité, délai d'approvisionnement, couverture.
+3. Donnez des réponses concrètes et actionnables avec des montants chiffrés. Ne vous contentez pas de rapporter les chiffres — interprétez-les et recommandez des actions.
+4. Quand c'est pertinent, reliez les métriques entre elles : une forte variance de délai fournisseur cause du surstock ; le stock dormant génère des coûts de stockage ; les ruptures sur les SKUs à forte rotation font perdre du chiffre d'affaires.
+5. Formatez les montants clairement (12 400 $ ou 12 400 € plutôt que 12400.0).
+6. Gardez vos réponses concises — 2 à 4 paragraphes courts maximum. Commencez par la réponse, puis le contexte, puis la recommandation.
+7. Si une question est ambiguë, faites une hypothèse raisonnable et énoncez-la.
+8. Si on vous demande quelque chose qui n'est pas dans la base, dites quelles données seraient nécessaires.
+9. Répondez TOUJOURS en français, avec la ponctuation française (espaces avant : ; ! ?).
+10. LIMITE STRICTE : utilisez au maximum 2 requêtes SQL par réponse. Après 2 requêtes, vous DEVEZ répondre avec les données disponibles, même imparfaites. N'émettez jamais de 3ème requête.
+11. Pour les questions larges ("développe des plans d'action", "donne-moi une stratégie"), posez UNE requête SQL exhaustive utilisant JOINs et CTEs pour tout obtenir en une fois, puis répondez complètement à partir de ce résultat unique.
+12. Il vaut mieux donner une réponse partielle mais complète qu'explorer sans fin. Les utilisateurs préfèrent une réponse ciblée sur les 3 problèmes principaux plutôt qu'une tentative incomplète de tout couvrir.
 
-Exemple de bonne réponse :
-"Votre stock dormant représente 206 550 € sur 50 références, soit 5,3 % de la valeur totale. Point important : aucune pièce de rechange n'est concernée — leur seuil de dormance est fixé à 3 ans, ce qui évite 200 faux positifs qu'un outil générique aurait signalés. Le vrai sujet est sur les composants : 294 références en surstock pour 202 672 €. Recommandation : gelez les réapprovisionnements sur ces 294 références pendant un trimestre, cela libère l'essentiel des 202 k€ sans aucune remise commerciale."
-"""
-else:
-    SYSTEM_PROMPT = f"""You are the AI analyst embedded in SupplyStack, a supply chain intelligence platform for industrial SMEs and mid-caps. You answer questions about the client's inventory, movements, purchase orders and ERP parameters by querying their live database.
+Si la question demande un plan détaillé ou une analyse approfondie, structurez votre réponse en sections claires avec des tableaux markdown. Priorisez la profondeur sur les 3-5 SKUs/items les plus importants plutôt que de couvrir tous les éléments superficiellement.
 
-{DATABASE_SCHEMA}
-
-RULES:
-1. Use the query_database tool to answer with real data. Never invent figures.
-2. Only SELECT queries are allowed. The tool rejects anything else.
-3. Give concrete, actionable answers with figures in euros. Don't just report numbers — interpret them and recommend actions.
-4. Reason like an industrial planner, not an e-commerce operator. A spare part sitting still for two years is normal; a finished good sitting still for six months is a problem. Always contextualise thresholds using article_types.
-5. Connect metrics: high supplier lead time variability (lt_stddev) forces higher safety stock; a stale ERP parameter causes both overstock and stockouts; Z-class items cannot be driven by a standard formula.
-6. Format amounts clearly (€12,400 rather than 12400.0).
-7. Keep answers concise — 2 to 4 short paragraphs. Answer first, then context, then recommendation.
-8. If a question is ambiguous, make a reasonable assumption and state it.
-9. If data is missing, say precisely which column or ERP export would be needed.
-10. STRICT LIMIT: 2 SQL queries maximum per answer. After 2 queries you MUST answer with what you have.
-11. For broad questions, issue ONE exhaustive query with JOINs and CTEs rather than chaining round trips.
+Exemple d'une bonne réponse :
+"Votre stock dormant s'élève à 45,9 M€ répartis sur 96 SKUs — soit 97 % de la valeur totale de votre stock, ce qui est critique. Le principal contributeur est le Diamondback Serene Classic (18,1 M€ bloqués, 2 669 jours de stock). Recommandation : commencez par les 5 SKUs les plus importants qui représentent 37,6 M€ combinés. Options : bundles promotionnels, canaux de liquidation, ou dépréciations pour bénéfice fiscal. Agir sur ces 5 SKUs ce trimestre pourrait libérer 10 à 15 M€ de trésorerie."
 """
 
 TOOLS = [
     {
         "name": "query_database",
-        "description": "Execute a read-only SQL SELECT query against the industrial supply chain PostgreSQL database. Returns results as JSON. Use this to answer any question about inventory, stock movements, purchase orders, suppliers, ERP parameters or KPIs with real data.",
+        "description": "Execute a read-only SQL SELECT query against the supply chain PostgreSQL database. Returns results as JSON. Use this to answer any question about inventory, orders, suppliers, or KPIs with real data.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1062,78 +765,87 @@ TOOLS = [
 
 
 def execute_tool_call(sql):
+    """Execute the SQL from Claude's tool call. Returns (result_string, dataframe_or_none)."""
     if not is_safe_query(sql):
         return "ERROR: Only SELECT queries are allowed. Query rejected for safety.", None
     try:
         df = run_query_uncached(sql)
         if df.empty:
             return "Query returned no results.", None
+        # Limit rows sent back to Claude
         df_limited = df.head(50)
-        return df_limited.to_json(orient="records", date_format="iso"), df_limited
+        result = df_limited.to_json(orient="records", date_format="iso")
+        return result, df_limited
     except Exception as e:
         return f"ERROR executing query: {str(e)}", None
 
 
+
 def _format_api_error(e):
+    """Format an anthropic APIStatusError for user display."""
     if e.status_code == 529:
-        return ("⚠️ Les serveurs d'Anthropic sont actuellement surchargés. Merci de réessayer dans une minute."
-                if CLIENT_LANG == "fr" else
-                "⚠️ Anthropic servers are currently overloaded. Please retry in a minute.")
+        return ("⚠️ Les serveurs d'Anthropic sont actuellement surchargés. "
+                "Merci de réessayer dans une minute.")
     if e.status_code == 429:
-        return ("⚠️ Limite de débit atteinte. Patientez quelques secondes puis réessayez."
-                if CLIENT_LANG == "fr" else "⚠️ Rate limit reached. Wait a few seconds and retry.")
+        return "⚠️ Limite de débit atteinte. Patientez quelques secondes puis réessayez."
     if e.status_code == 401:
-        return ("⚠️ Clé API rejetée. Vérifiez `anthropic_api_key` dans les secrets Streamlit."
-                if CLIENT_LANG == "fr" else "⚠️ API key rejected. Check `anthropic_api_key` in Streamlit secrets.")
-    return f"⚠️ AI request failed ({e.status_code}): {getattr(e, 'message', str(e))}"
-
-
+        return "⚠️ Clé API rejetée. Vérifiez `anthropic_api_key` dans les secrets Streamlit."
+    return f"⚠️ Échec de la requête IA ({e.status_code}) : {getattr(e, 'message', str(e))}"
+ 
+ 
 def ask_claude(user_question, conversation_history, text_placeholder=None):
-    """Send question to Claude with streaming + tool calling."""
+    """Send question to Claude with streaming + tool calling.
+    
+    If text_placeholder is provided, streams text into it in real-time.
+    Returns (final_answer_text, list_of_(sql, dataframe) tuples).
+    """
     try:
         import anthropic
     except ImportError:
-        msg = "The 'anthropic' package is not installed. Run: pip install anthropic>=0.40"
+        msg = "Le paquet 'anthropic' n'est pas installé. Lancez : pip install anthropic>=0.40"
         if text_placeholder is not None:
             text_placeholder.markdown(msg)
         return msg, []
-
-    if not ANTHROPIC_API_KEY:
-        msg = ("⚠️ Clé API Anthropic non configurée. Streamlit Cloud → Manage app → Settings → Secrets, "
-               "ajoutez : anthropic_api_key = \"sk-ant-...\""
-               if CLIENT_LANG == "fr" else
-               "⚠️ Anthropic API key not configured. Streamlit Cloud → Manage app → Settings → Secrets, "
-               "add: anthropic_api_key = \"sk-ant-...\"")
+ 
+    if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY == "YOUR_ANTHROPIC_API_KEY_HERE":
+        msg = ("⚠️ Clé API Anthropic non configurée. Dans Streamlit Cloud allez dans "
+               "Manage app → Settings → Secrets et ajoutez : "
+               "anthropic_api_key = \"sk-ant-...\"")
         if text_placeholder is not None:
             text_placeholder.markdown(msg)
         return msg, []
-
+ 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=45.0, max_retries=3)
-
+ 
+    # System prompt with prompt caching — cuts ~1-3s off subsequent requests
     system_param = [{
         "type": "text",
         "text": SYSTEM_PROMPT,
         "cache_control": {"type": "ephemeral"},
     }]
-
+ 
+    # Fastest model first; fall back only if overloaded
     fallback_chain = [
-        "claude-haiku-4-5-20251001",
-        "claude-sonnet-5",
-        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",   # fast primary — ~3-4× faster than Sonnet
+        "claude-sonnet-5",              # fallback for complex reasoning
+        "claude-sonnet-4-6",            # last resort
     ]
-
-    messages = [{"role": m["role"], "content": m["content"]} for m in conversation_history]
+ 
+    messages = []
+    for msg in conversation_history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
     messages.append({"role": "user", "content": user_question})
-
+ 
     dataframes = []
     max_iterations = 6
     model_used = None
-
+ 
     for _iteration in range(max_iterations):
+        # Try each model in the fallback chain
         streamed_ok = False
         final_message = None
         accumulated_text = ""
-
+ 
         for model in fallback_chain:
             try:
                 accumulated_text = ""
@@ -1148,42 +860,46 @@ def ask_claude(user_question, conversation_history, text_placeholder=None):
                         accumulated_text += text
                         if text_placeholder is not None:
                             text_placeholder.markdown(
-                                accumulated_text + " <span style='color:#6355ff;opacity:0.7'>▊</span>",
+                                accumulated_text
+                                + " <span style='color:#6355ff;opacity:0.7'>▊</span>",
                                 unsafe_allow_html=True,
                             )
                     final_message = stream.get_final_message()
+ 
                 streamed_ok = True
                 model_used = model
                 break
+ 
             except anthropic.APIStatusError as e:
                 if e.status_code in (429, 529):
-                    continue
+                    continue  # try next model
                 err = _format_api_error(e)
                 if text_placeholder is not None:
                     text_placeholder.markdown(err)
                 return err, dataframes
             except Exception as e:
-                err = f"⚠️ Unexpected error contacting the AI: {e}"
+                err = f"⚠️ Erreur inattendue lors du contact avec l'IA : {e}"
                 if text_placeholder is not None:
                     text_placeholder.markdown(err)
                 return err, dataframes
-
+ 
         if not streamed_ok:
-            err = ("⚠️ Tous les modèles d'IA sont actuellement surchargés. Réessayez dans une minute."
-                   if CLIENT_LANG == "fr" else
-                   "⚠️ All AI models are currently overloaded. Retry in a minute.")
+            err = ("⚠️ Tous les modèles d'IA sont actuellement surchargés. "
+                   "Merci de réessayer dans une minute.")
             if text_placeholder is not None:
                 text_placeholder.markdown(err)
             return err, dataframes
-
+ 
+        # Now process the final message
         if final_message.stop_reason == "tool_use":
+            # Swap streamed text for a clean "querying" state while SQL runs
             if text_placeholder is not None:
-                querying = ("Interrogation de votre base de données…" if CLIENT_LANG == "fr"
-                            else "Querying your database…")
                 text_placeholder.markdown(
-                    f"🔍 <span style='color:#6355ff;font-weight:600'>{querying}</span>",
+                    "🔍 <span style='color:#6355ff;font-weight:600'>"
+                    "Interrogation de votre base de données…</span>",
                     unsafe_allow_html=True,
                 )
+ 
             messages.append({"role": "assistant", "content": final_message.content})
             tool_results = []
             for block in final_message.content:
@@ -1201,25 +917,27 @@ def ask_claude(user_question, conversation_history, text_placeholder=None):
                         "content": result_str,
                     })
             messages.append({"role": "user", "content": tool_results})
+            # Loop to next iteration for the final answer
         else:
+            # Final answer — remove cursor, add model note if we fell back
             final_answer = accumulated_text
             if model_used and model_used != "claude-haiku-4-5-20251001":
                 final_answer += (
-                    f"\n\n<sub style='color:#94a3b8;'>⚡ Answered by {model_used}</sub>"
+                    f"\n\n<sub style='color:#94a3b8;'>⚡ Répondu par "
+                    f"{model_used} (le modèle principal était occupé)</sub>"
                 )
             if text_placeholder is not None:
                 text_placeholder.markdown(final_answer, unsafe_allow_html=True)
             return final_answer, dataframes
-
-    fallback_msg = ("L'assistant a fait trop d'étapes. Essayez de reformuler votre question."
-                    if CLIENT_LANG == "fr" else
-                    "The assistant took too many steps. Try rephrasing your question.")
+ 
+    # Max iterations reached without final answer
+    fallback_msg = "L'assistant a fait trop d'étapes. Essayez de reformuler votre question."
     if text_placeholder is not None:
         text_placeholder.markdown(fallback_msg)
     return fallback_msg, dataframes
 
-
 # ── AURORA HEADER ─────────────────────────────────────────────────────────────
+
 st.markdown(f"""
 <div style="display:flex; align-items:center; gap:16px; padding:4px 2px 20px; margin-bottom:6px;">
     <div style="width:40px; height:40px; border-radius:12px;
@@ -1227,22 +945,19 @@ st.markdown(f"""
          display:flex; align-items:center; justify-content:center; font-size:19px; font-weight:800; color:#fff;
          box-shadow:0 8px 18px -8px rgba(99,85,255,0.7);">S</div>
     <div style="display:flex; flex-direction:column; gap:2px;">
-        <span style="font-size:9.5px; font-weight:600; letter-spacing:0.18em; color:#a5aec4;">SUPPLYSTACK · INDUSTRIAL</span>
-        <span style="font-size:22px; font-weight:800; color:#0f172a; letter-spacing:-0.02em;">{T['header_sub']}</span>
+        <span style="font-size:9.5px; font-weight:600; letter-spacing:0.18em; color:#a5aec4;">SUPPLYSTACK</span>
+        <span style="font-size:22px; font-weight:800; color:#0f172a; letter-spacing:-0.02em;">Tableau de bord — Opérations et stocks</span>
     </div>
     <div style="flex:1;"></div>
-    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; margin-right:6px;">
-        <span style="font-size:13px; font-weight:700; color:#0f172a;">{CLIENT_NAME}</span>
-        <span style="font-size:11px; font-weight:500; color:#94a3b8;">{datetime.now().strftime('%d/%m/%Y %H:%M')}</span>
-    </div>
     <div style="width:38px; height:38px; border-radius:50%;
          background:linear-gradient(135deg,#6355ff,#c084fc);
-         display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#fff;">{CLIENT_INITIALS}</div>
+         display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#fff;">JD</div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── GLOBAL DATE RANGE (movements + purchase orders) ──────────────────────────
-_bounds = run_query("SELECT MIN(movement_date)::date AS mn, MAX(movement_date)::date AS mx FROM stock_movements")
+
+# ── GLOBAL DATE RANGE (filters order-based metrics only) ──────────────────────
+_bounds = run_query("SELECT MIN(order_date)::date AS mn, MAX(order_date)::date AS mx FROM orders")
 if not _bounds.empty and _bounds.iloc[0]["mx"] is not None:
     DATA_MIN = pd.to_datetime(_bounds.iloc[0]["mn"]).date()
     DATA_MAX = pd.to_datetime(_bounds.iloc[0]["mx"]).date()
@@ -1250,80 +965,93 @@ else:
     DATA_MAX = date.today()
     DATA_MIN = DATA_MAX - timedelta(days=365)
 
-if CLIENT_LANG == "fr":
-    PRESETS = {
-        "30 derniers jours": 30, "90 derniers jours": 90, "6 derniers mois": 182,
-        "12 derniers mois": 365, "Tout l'historique": None, "Période personnalisée…": "custom",
-    }
-    ALL_LABEL = "Tout l'historique"
-    CUSTOM_LABEL = "Période personnalisée…"
-else:
-    PRESETS = {
-        "Last 30 days": 30, "Last 90 days": 90, "Last 6 months": 182,
-        "Last 12 months": 365, "All history": None, "Custom range…": "custom",
-    }
-    ALL_LABEL = "All history"
-    CUSTOM_LABEL = "Custom range…"
+PRESETS = {
+    "30 derniers jours": 30, "90 derniers jours": 90, "6 derniers mois": 182,
+    "12 derniers mois": 365, "Tout l'historique": None, "Période personnalisée…": "custom",
+}
 
 _sp, _tc = st.columns([3, 1])
 with _tc:
     _choice = st.selectbox("Date range", list(PRESETS.keys()),
-                           index=list(PRESETS).index(ALL_LABEL), label_visibility="collapsed")
-    if _choice == CUSTOM_LABEL:
+                           index=list(PRESETS).index("Tout l'historique"), label_visibility="collapsed")
+    if _choice == "Période personnalisée…":
         _r = st.date_input("Custom range", value=(DATA_MIN, DATA_MAX),
                            min_value=DATA_MIN, max_value=DATA_MAX, label_visibility="collapsed")
         if isinstance(_r, (list, tuple)) and len(_r) == 2:
             START_DATE, END_DATE = _r
         else:
             START_DATE, END_DATE = DATA_MIN, DATA_MAX
-    elif _choice == ALL_LABEL:
+    elif _choice == "Tout l'historique":
         START_DATE, END_DATE = DATA_MIN, DATA_MAX
     else:
         END_DATE = DATA_MAX
         START_DATE = max(DATA_MIN, DATA_MAX - timedelta(days=PRESETS[_choice]))
 
-if _choice == ALL_LABEL:
-    MVT_WHERE = ""
-    PO_WHERE = ""
+# SQL snippet injected into order-based queries
+if _choice == "Tout l'historique":
+    ORDERS_WHERE = ""
 else:
-    MVT_WHERE = ("WHERE movement_date >= '%s' AND movement_date < '%s'"
-                 % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
-    PO_WHERE = ("WHERE order_date >= '%s' AND order_date < '%s'"
-                % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
+    ORDERS_WHERE = ("WHERE order_date >= '%s' AND order_date < '%s'"
+                    % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
 
 st.markdown(
     f'<div style="margin:2px 0 8px;font-size:12.5px;font-weight:500;color:#64748b;">'
-    f'📅&nbsp; {T["date_note"]} <b style="color:#334155;">{START_DATE:%d/%m/%Y} → {END_DATE:%d/%m/%Y}</b>.</div>',
+    f'📅&nbsp; Les métriques basées sur les commandes couvrent <b style="color:#334155;">{START_DATE:%b %d, %Y} → {END_DATE:%b %d, %Y}</b>'
+    f'&nbsp;·&nbsp; les niveaux de stock sont un instantané en direct (non filtré par date).</div>',
     unsafe_allow_html=True,
 )
 
+
 # ── TABS ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    T["tab_exec"], T["tab_stock"], T["tab_supplier"], T["tab_reorder"],
-    T["tab_ai"], T["tab_health"], T["tab_invoice"],
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "📊 Tableau exécutif",
+    "📦 Détail des stocks",
+    "🚚 Opérations fournisseurs",
+    "🔄 Recommandations de réapprovisionnement",
+    "🤖 Assistant IA",
+    "🔔 Historique des alertes",
+    "🏥 Santé des données",
+    "💰 Factures",           # ← new
 ])
 
+
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 1: EXECUTIVE DASHBOARD
+# TAB 1: EXECUTIVE DASHBOARD  (Aurora layout)
 # ══════════════════════════════════════════════════════════════════════════════
+
 with tab1:
-    st.markdown(f"""
+
+    # header row: title + traffic-light legend
+    st.markdown("""
     <div style="display:flex; align-items:flex-end; justify-content:space-between; margin:2px 0 18px;">
       <div>
-        <h2 style="margin:0; font-size:22px; font-weight:800; color:#0f172a; letter-spacing:-0.02em;">{T['exec_title']}</h2>
-        <p style="margin:5px 0 0; font-size:13px; font-weight:500; color:#64748b;">{T['exec_sub']}</p>
+        <h2 style="margin:0; font-size:22px; font-weight:800; color:#0f172a; letter-spacing:-0.02em;">Vue exécutive</h2>
+        <p style="margin:5px 0 0; font-size:13px; font-weight:500; color:#64748b;">Santé du fonds de roulement à travers vos entrepôts et catégories</p>
       </div>
       <div style="display:flex; gap:16px; align-items:center;">
-        <span style="display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:#475569;"><span style="width:9px;height:9px;border-radius:50%;background:#12b76a;"></span>{T['legend_healthy']}</span>
-        <span style="display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:#475569;"><span style="width:9px;height:9px;border-radius:50%;background:#f79009;"></span>{T['legend_watch']}</span>
-        <span style="display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:#475569;"><span style="width:9px;height:9px;border-radius:50%;background:#e5484d;"></span>{T['legend_risk']}</span>
+        <span style="display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:#475569;"><span style="width:9px;height:9px;border-radius:50%;background:#12b76a;"></span>Sain</span>
+        <span style="display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:#475569;"><span style="width:9px;height:9px;border-radius:50%;background:#f79009;"></span>À surveiller</span>
+        <span style="display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:#475569;"><span style="width:9px;height:9px;border-radius:50%;background:#e5484d;"></span>À risque</span>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    kpi_data = run_query("""
-        SELECT * FROM daily_kpis_industrial
-        ORDER BY kpi_date DESC LIMIT 1
+    kpi_data = run_query(f"""
+        SELECT
+            COALESCE(SUM(CASE WHEN is_dead_stock THEN inventory_value ELSE 0 END), 0) AS dead_stock_value,
+            COALESCE(SUM(CASE WHEN is_excess THEN excess_value ELSE 0 END), 0) AS excess_stock_value,
+            COALESCE(SUM(inventory_value), 0) AS total_inventory_value,
+            COALESCE(SUM(inventory_value) * 0.25 / 12, 0) AS holding_cost_monthly,
+            COALESCE(
+                (SELECT SUM(o.total_amount) FROM orders o {ORDERS_WHERE}) / NULLIF(SUM(inventory_value), 0),
+                0
+            ) AS inventory_turnover,
+            COALESCE(
+                SUM(CASE WHEN current_stock < reorder_point
+                    THEN avg_daily_demand * 30 * unit_cost ELSE 0 END),
+                0
+            ) AS stockout_cost
+        FROM inventory
     """)
 
     hist = get_kpi_history()
@@ -1347,48 +1075,21 @@ with tab1:
 
     if not kpi_data.empty:
         row = kpi_data.iloc[0]
+
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         with c1:
-            st.markdown(_card(T["kpi_dead"], "dead_stock_value",
-                              format_currency(row["dead_stock_value"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(_card("Stock dormant", "dead_stock_value", format_currency(row["dead_stock_value"]), "kpi-danger"), unsafe_allow_html=True)
         with c2:
-            st.markdown(_card(T["kpi_excess"], "excess_stock_value",
-                              format_currency(row["excess_stock_value"]), "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(_card("Stock excédentaire", "excess_stock_value", format_currency(row["excess_stock_value"]), "kpi-warning"), unsafe_allow_html=True)
         with c3:
-            st.markdown(_card(T["kpi_total"], "total_stock_value",
-                              format_currency(row["total_stock_value"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(_card("Stock total", "total_inventory_value", format_currency(row["total_inventory_value"]), "kpi-info"), unsafe_allow_html=True)
         with c4:
-            st.markdown(_card(T["kpi_holding"], "annual_holding_cost",
-                              format_currency(row["annual_holding_cost"]), "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(_card("Coût de stockage / Mois", "holding_cost_monthly", format_currency(row["holding_cost_monthly"]), "kpi-warning"), unsafe_allow_html=True)
         with c5:
-            turn = row["stock_turnover_ratio"]
-            tclass = "kpi-danger" if (turn is not None and float(turn) < 2) else "kpi-success"
-            st.markdown(_card(T["kpi_turnover"], "stock_turnover_ratio",
-                              format_number(turn, 2) + "x", tclass), unsafe_allow_html=True)
+            turnover_class = "kpi-danger" if row["inventory_turnover"] < 2 else "kpi-success"
+            st.markdown(_card("Rotation des stocks", "inventory_turnover", format_number(row["inventory_turnover"], 2) + "x", turnover_class), unsafe_allow_html=True)
         with c6:
-            st.markdown(_card(T["kpi_recover"], "recoverable_cash_est",
-                              format_currency(row["recoverable_cash_est"]), "kpi-success"), unsafe_allow_html=True)
-
-        st.write("")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.markdown(_card(T["kpi_bfr"], "working_capital_tied",
-                              format_currency(row["working_capital_tied"]), "kpi-warning"), unsafe_allow_html=True)
-        with c2:
-            otd = row["supplier_otd_rate"]
-            oclass = "kpi-danger" if (otd is not None and float(otd) < 70) else (
-                "kpi-warning" if (otd is not None and float(otd) < 85) else "kpi-success")
-            st.markdown(_card(T["kpi_otd"], "supplier_otd_rate", format_pct(otd), oclass), unsafe_allow_html=True)
-        with c3:
-            cov = row["avg_coverage_days"]
-            cclass = "kpi-danger" if (cov is not None and float(cov) > 180) else "kpi-info"
-            st.markdown(_card(T["kpi_coverage"], "avg_coverage_days",
-                              format_number(cov, 0) + " j", cclass), unsafe_allow_html=True)
-        with c4:
-            st.markdown(kpi_card(T["kpi_stockout"],
-                                 format_number(row["stockout_risk_ref_count"]), "kpi-danger"), unsafe_allow_html=True)
-    else:
-        alert_box("info", T["run_pipeline"])
+            st.markdown(_card("Coût de rupture / Mois", "stockout_cost", format_currency(row["stockout_cost"]), "kpi-danger"), unsafe_allow_html=True)
 
     st.write("")
 
@@ -1396,20 +1097,22 @@ with tab1:
     main_left, main_right = st.columns([2, 1], gap="medium")
 
     with main_left:
-        st.subheader(T["chart_dead_family"])
-        dead_by_family = run_query("""
-            SELECT article_family, SUM(trapped_value) AS dead_value
+        # Dead Stock Value by Category — coral gradient bars
+        st.subheader("Valeur du stock dormant par catégorie")
+        dead_by_cat = run_query("""
+            SELECT category, SUM(inventory_value) AS dead_value
             FROM inventory
-            WHERE is_dead_stock = true AND trapped_value > 0
-            GROUP BY article_family
+            WHERE is_dead_stock = true
+            GROUP BY category
             ORDER BY dead_value DESC
             LIMIT 8
         """)
-        if not dead_by_family.empty:
+
+        if not dead_by_cat.empty:
             fig = px.bar(
-                dead_by_family, y="article_family", x="dead_value", orientation="h",
+                dead_by_cat, y="category", x="dead_value", orientation="h",
                 color="dead_value", color_continuous_scale=["#ffc2b8", "#ff8a8b", "#ff5470"],
-                labels={"dead_value": f"{T['kpi_dead']} ({CURRENCY})", "article_family": ""},
+                labels={"dead_value": "Valeur du stock dormant ($)", "category": ""},
             )
             fig = style_fig(fig, height=320)
             fig.update_layout(coloraxis_showscale=False, margin=dict(l=10, r=12, t=10, b=34),
@@ -1419,92 +1122,88 @@ with tab1:
                 fig.update_traces(marker_cornerradius=6)
             except Exception:
                 pass
-            fig.update_traces(hovertemplate="<b>%{y}</b><br>%{x:,.0f} " + CURRENCY + "<extra></extra>")
+            fig.update_traces(hovertemplate="<b>%{y}</b><br>$%{x:,.0f}<extra></extra>")
             st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
         else:
-            alert_box("success", "✅ " + ("Aucune famille en stock dormant." if CLIENT_LANG == "fr"
-                                          else "No family with dead stock."))
+            st.info("Aucune donnée de stock dormant disponible.")
 
         sub_l, sub_r = st.columns(2, gap="medium")
 
         with sub_l:
-            st.subheader(T["chart_type_mix"])
-            by_type = run_query("""
-                SELECT article_type, SUM(current_stock * unit_cost) AS val
+            # Excess by Warehouse — DONUT (Aurora)
+            st.subheader("Excédent par entrepôt")
+            excess_by_wh = run_query("""
+                SELECT warehouse, SUM(excess_value) AS excess_val
                 FROM inventory
-                GROUP BY article_type
-                ORDER BY val DESC
+                WHERE is_excess = true
+                GROUP BY warehouse
+                ORDER BY excess_val DESC
             """)
-            if not by_type.empty:
-                by_type["label"] = by_type["article_type"].map(lambda x: TN.get(x, x))
-                total_val = by_type["val"].sum()
+
+            if not excess_by_wh.empty:
+                total_excess = excess_by_wh["excess_val"].sum()
                 fig = px.pie(
-                    by_type, values="val", names="label", hole=0.62,
-                    color_discrete_sequence=["#6355ff", "#8b7cff", "#a78bfa", "#c4b5fd",
-                                             "#ddd6fe", "#ede9fe", "#f5f3ff", "#e0e7ff"],
+                    excess_by_wh, values="excess_val", names="warehouse", hole=0.62,
+                    color_discrete_sequence=["#6355ff", "#a78bfa", "#ddd6fe", "#ede9fe"],
                 )
                 fig.update_traces(
-                    textinfo="percent", textfont=dict(family="Plus Jakarta Sans", size=11, color="#fff"),
+                    textinfo="percent", textfont=dict(family="Plus Jakarta Sans", size=12, color="#fff"),
                     marker=dict(line=dict(color="#ffffff", width=2)),
-                    hovertemplate="<b>%{label}</b><br>%{value:,.0f} " + CURRENCY + "<extra></extra>",
+                    hovertemplate="<b>%{label}</b><br>$%{value:,.0f}<extra></extra>",
                 )
                 fig = style_fig(fig, height=300, legend=True)
                 fig.add_annotation(
-                    text=f"<b>{format_currency(total_val)}</b><br><span style='font-size:10px;color:#94a3b8'>{T['kpi_total'].lower()}</span>",
+                    text=f"<b>{format_currency(total_excess)}</b><br><span style='font-size:10px;color:#94a3b8'>excédent</span>",
                     x=0.5, y=0.5, showarrow=False,
-                    font=dict(family="Plus Jakarta Sans", size=17, color="#0f172a"),
+                    font=dict(family="Plus Jakarta Sans", size=18, color="#0f172a"),
                 )
                 st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
             else:
-                alert_box("info", T["no_data"])
+                st.info("Aucune donnée de stock excédentaire disponible.")
 
         with sub_r:
-            st.subheader(T["chart_trend"])
-            if hist is not None and not hist.empty and "total_stock_value" in hist.columns:
-                tv = hist.dropna(subset=["total_stock_value"])
-                if len(tv) >= 2:
-                    ymin = tv["total_stock_value"].astype(float).min()
-                    ymax = tv["total_stock_value"].astype(float).max()
-                    pad = (ymax - ymin) * 0.15 or ymax * 0.02
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=tv["kpi_date"], y=tv["total_stock_value"],
-                        mode="lines+markers", line=dict(color="#6355ff", width=2.5),
-                        marker=dict(size=6, color="#6355ff"),
-                        fill="tozeroy", fillcolor="rgba(99,85,255,0.12)",
-                        hovertemplate="%{x|%d/%m/%Y}<br>%{y:,.0f} " + CURRENCY + "<extra></extra>",
-                    ))
-                    fig = style_fig(fig, height=280)
-                    fig.update_layout(yaxis=dict(range=[max(0, ymin - pad), ymax + pad], gridcolor="#eef0f6"))
-                    st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+                st.subheader("Évolution du stock total")
+                if hist is not None and not hist.empty and "total_inventory_value" in hist.columns:
+                    tv = hist.dropna(subset=["total_inventory_value"])
+                    if len(tv) >= 2:
+                        ymin = tv["total_inventory_value"].min()
+                        ymax = tv["total_inventory_value"].max()
+                        pad = (ymax - ymin) * 0.15 or ymax * 0.02
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=tv["kpi_date"], y=tv["total_inventory_value"],
+                            mode="lines+markers", line=dict(color="#6355ff", width=2.5),
+                            marker=dict(size=6, color="#6355ff"),
+                            fill="tozeroy", fillcolor="rgba(99,85,255,0.12)",
+                            hovertemplate="%{x|%b %d, %Y}<br>$%{y:,.0f}<extra></extra>",
+                        ))
+                        fig = style_fig(fig, height=280)
+                        fig.update_layout(yaxis=dict(range=[max(0, ymin - pad), ymax + pad], gridcolor="#eef0f6"))
+                        st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+                        st.markdown(
+    '<div style="font-size:11px;color:#94a3b8;margin-top:-4px;">'
+    'Source : <b>daily_kpis.total_inventory_value</b> — un point par instantané quotidien. '
+    'Les valeurs basses initiales reflètent le remplissage du pipeline, non un déclin réel.</div>',
+    unsafe_allow_html=True,
+)
+                    else:
+                        alert_box("info", "Pas assez d'historique pour afficher une tendance.")
                 else:
-                    alert_box("info", T["not_enough_hist"])
-            else:
-                alert_box("info", T["run_pipeline"])
+                    alert_box("info", "Lancez le pipeline KPI quotidien pour alimenter la tendance.")
 
     with main_right:
         # ── AI Insight card (data-driven) ──────────────────────────────────
-        insight = ("Le stock dormant concentre votre risque en fonds de roulement."
-                   if CLIENT_LANG == "fr" else
-                   "Dead stock concentrates your working capital risk.")
+        insight = "Le stock dormant concentre votre risque en fonds de roulement. Priorisez la liquidation des principales catégories pour libérer du cash."
         try:
-            if not kpi_data.empty:
-                r = kpi_data.iloc[0]
-                pdr_saved = run_query("""
-                    SELECT COUNT(*) AS c FROM inventory
-                    WHERE article_type = 'PDR' AND days_since_movement > 365 AND is_dead_stock = false
-                """)
-                n_saved = int(pdr_saved.iloc[0]["c"]) if not pdr_saved.empty else 0
-                if CLIENT_LANG == "fr":
-                    insight = (f"<b>{format_currency(r['recoverable_cash_est'])}</b> de trésorerie mobilisable "
-                               f"sur <b>{format_currency(r['working_capital_tied'])}</b> immobilisés. "
-                               f"Le seuil de dormance différencié par type d'article évite "
-                               f"<b>{n_saved} faux positifs</b> sur vos pièces de rechange.")
-                else:
-                    insight = (f"<b>{format_currency(r['recoverable_cash_est'])}</b> of cash is mobilisable "
-                               f"out of <b>{format_currency(r['working_capital_tied'])}</b> tied up. "
-                               f"Type-specific dormancy thresholds avoid "
-                               f"<b>{n_saved} false positives</b> on your spare parts.")
+            if not dead_by_cat.empty:
+                tot = dead_by_cat["dead_value"].sum()
+                top3 = dead_by_cat.head(3)["dead_value"].sum()
+                share = (top3 / tot * 100) if tot else 0
+                names = dead_by_cat.head(2)["category"].tolist()
+                who = " et ".join(names) if names else "vos principales catégories"
+                recover = tot * 0.18
+                insight = (f"3 catégories représentent <b>{share:.0f}%</b> du stock dormant. Une liquidation par remise sur "
+                   f"{who} pourrait libérer <b>~{format_currency(recover)}</b> de fonds de roulement ce trimestre.")
         except Exception:
             pass
 
@@ -1514,86 +1213,55 @@ with tab1:
           <div style="display:flex; align-items:center; gap:8px; margin-bottom:13px;">
             <span style="width:24px;height:24px;border-radius:8px;background:rgba(255,255,255,0.2);
                   display:flex;align-items:center;justify-content:center;font-size:13px;">✦</span>
-            <span style="font-size:10px; font-weight:700; letter-spacing:0.12em;">{T['rail_ai']}</span>
+            <span style="font-size:10px; font-weight:700; letter-spacing:0.12em;">ASSISTANT IA</span>
           </div>
           <p style="margin:0; font-size:13.5px; font-weight:500; line-height:1.55; color:rgba(255,255,255,0.94);">{insight}</p>
         </div>
         """, unsafe_allow_html=True)
 
-        hint = ("💬 Ouvrez l'onglet <b style=\"color:#6355ff;\">Assistant IA</b> pour un plan de déstockage complet "
-                "ou une analyse de dérive de vos paramètres ERP."
-                if CLIENT_LANG == "fr" else
-                "💬 Open the <b style=\"color:#6355ff;\">AI Assistant</b> tab for a full destocking plan "
-                "or an ERP parameter drift analysis.")
-        st.markdown(f'<div style="font-size:12px;color:#94a3b8;margin-top:2px;line-height:1.5;">{hint}</div>',
-                    unsafe_allow_html=True)
+        st.markdown(
+            '<div style="font-size:12px;color:#94a3b8;margin-top:2px;line-height:1.5;">'
+            '💬 Ouvrez l\'onglet <b style="color:#6355ff;">Assistant IA</b> pour un plan de liquidation complet '
+'ou une analyse détaillée de la rotation.</div>',
+            unsafe_allow_html=True,
+        )
         st.write("")
 
-        # ── Recent Alerts (live data) ──────────────────────────────────────
+        # ── Recent Alerts (built from live data) ───────────────────────────
         alerts_html = ['<div class="aurora-panel" style="margin-bottom:16px;">',
-                       f'<div class="rail-title"><h4>{T["rail_alerts"]}</h4>'
-                       f'<span style="color:#94a3b8;font-weight:600;">{T["live"]}</span></div>']
+               '<div class="rail-title"><h4>Alertes récentes</h4><span style="color:#94a3b8;font-weight:600;">en direct</span></div>']
         tint = {"#e5484d": "#fdecec", "#f79009": "#fef3e2", "#3b82f6": "#eaf1fe"}
         rows = []
         try:
-            top_dead = run_query("""
-                SELECT product_name, article_code, trapped_value
-                FROM inventory WHERE is_dead_stock = true
-                ORDER BY trapped_value DESC LIMIT 1
-            """)
+            top_dead = run_query("SELECT product_name, inventory_value FROM inventory WHERE is_dead_stock = true ORDER BY inventory_value DESC LIMIT 1")
             if not top_dead.empty:
                 r0 = top_dead.iloc[0]
-                nm = str(r0["product_name"])[:34]
-                rows.append((f"{nm} — {format_currency(r0['trapped_value'])} " +
-                             ("immobilisés" if CLIENT_LANG == "fr" else "tied up"),
-                             T["kpi_dead"], "#e5484d", T["live"]))
+                rows.append((f"{r0['product_name']} signalé — {format_currency(r0['inventory_value'])} bloqués", "Stock dormant", "#e5484d", "en direct"))
         except Exception:
             pass
         try:
-            crit_sup = run_query("""
-                SELECT supplier_name, otd_when_measurable
-                FROM v_supplier_scorecard_robust
-                WHERE supplier_category = 'critical'
-                ORDER BY risk_score DESC LIMIT 1
-            """)
-            if not crit_sup.empty:
-                s0 = crit_sup.iloc[0]
-                lbl = ("OTD à %.0f%%" if CLIENT_LANG == "fr" else "OTD at %.0f%%") % float(s0["otd_when_measurable"] or 0)
-                rows.append((f"{s0['supplier_name']} — {lbl}",
-                             T["col_supplier"], "#e5484d", T["live"]))
+            top_wh = run_query("SELECT warehouse, SUM(excess_value) AS v FROM inventory WHERE is_excess = true GROUP BY warehouse ORDER BY v DESC LIMIT 1")
+            if not top_wh.empty:
+                w0 = top_wh.iloc[0]
+                rows.append((f"{w0['warehouse']} détient le plus d'excédent — {format_currency(w0['v'])}", "Capacité", "#f79009", "en direct"))
         except Exception:
             pass
         try:
-            below = run_query("SELECT COUNT(*) AS c FROM inventory WHERE is_stockout_risk = true")
+            below = run_query("SELECT COUNT(*) AS c FROM inventory WHERE current_stock < reorder_point AND avg_daily_demand > 0")
             if not below.empty and int(below.iloc[0]["c"]) > 0:
-                txt = (f"{int(below.iloc[0]['c'])} références sous le seuil d'alerte"
-                       if CLIENT_LANG == "fr" else
-                       f"{int(below.iloc[0]['c'])} references below alert level")
-                rows.append((txt, T["kpi_stockout"], "#f79009", T["live"]))
+                rows.append((f"{int(below.iloc[0]['c'])} SKUs sous le seuil de réappro", "Rupture", "#e5484d", "en direct"))
         except Exception:
             pass
-        try:
-            drift = run_query("""
-                SELECT COUNT(*) AS c FROM inventory
-                WHERE actual_lead_time_days IS NOT NULL AND erp_lead_time_days IS NOT NULL
-                  AND ABS(actual_lead_time_days - erp_lead_time_days) > 7
-            """)
-            if not drift.empty and int(drift.iloc[0]["c"]) > 0:
-                txt = (f"{int(drift.iloc[0]['c'])} références : délai ERP décalé de plus de 7 jours"
-                       if CLIENT_LANG == "fr" else
-                       f"{int(drift.iloc[0]['c'])} references: ERP lead time off by more than 7 days")
-                rows.append((txt, "ERP", "#3b82f6", T["live"]))
-        except Exception:
-            pass
+        rows.append(("Instantané KPI quotidien actualisé", "Prévision", "#3b82f6", "aujourd'hui"))
 
         for text, tag, sev, when in rows:
             alerts_html.append(f"""
             <div class="alert-row">
               <span class="alert-bar" style="background:{sev};"></span>
               <div class="alert-body">
-                <span class="alert-text">{_esc(text)}</span>
+                <span class="alert-text">{text}</span>
                 <div class="alert-meta">
-                  <span class="alert-tag" style="color:{sev};background:{tint.get(sev,'#f1f2f8')};">{_esc(tag)}</span>
+                  <span class="alert-tag" style="color:{sev};background:{tint.get(sev,'#f1f2f8')};">{tag}</span>
                   <span class="alert-time">{when}</span>
                 </div>
               </div>
@@ -1603,51 +1271,45 @@ with tab1:
 
         # ── Reorder Recommendations (mini) ─────────────────────────────────
         reo_html = ['<div class="aurora-panel">',
-                    f'<div class="rail-title"><h4>{T["rail_reorder"]}</h4>'
-                    f'<span style="color:#94a3b8;font-weight:600;">top 4</span></div>']
+            '<div class="rail-title"><h4>Recommandations de réappro</h4><span style="color:#94a3b8;font-weight:600;">top 4</span></div>']
         pbg = {"#e5484d": "#fdecec", "#f79009": "#fef3e2", "#12b76a": "#e7f7ef"}
         try:
             reo = run_query("""
-                SELECT product_name, article_code, warehouse,
-                    GREATEST(COALESCE(moq, 1),
-                        ROUND(GREATEST(0, COALESCE(calculated_reorder_point, 0) - current_stock))
-                    ) AS qty,
-                    ROUND(COALESCE(coverage_days, 0)) AS cov
+                SELECT product_name, warehouse,
+                    GREATEST(100, ROUND(avg_daily_demand * supplier_lead_time_days * 1.5)) AS qty,
+                    CASE WHEN avg_daily_demand > 0 THEN ROUND(current_stock / avg_daily_demand) ELSE 9999 END AS dus
                 FROM inventory
-                WHERE is_stockout_risk = true AND avg_daily_consumption > 0
-                ORDER BY coverage_days ASC NULLS LAST
+                WHERE avg_daily_demand > 0 AND current_stock < ROUND(avg_daily_demand * supplier_lead_time_days * 1.5)
+                ORDER BY current_stock / NULLIF(avg_daily_demand, 0) ASC
                 LIMIT 4
             """)
             if not reo.empty:
                 for _, rr in reo.iterrows():
-                    cov = float(rr["cov"] or 0)
-                    if cov < 14:
-                        pri, pc = ("Haute" if CLIENT_LANG == "fr" else "High"), "#e5484d"
-                    elif cov < 30:
-                        pri, pc = ("Moy" if CLIENT_LANG == "fr" else "Med"), "#f79009"
+                    dus = rr["dus"]
+                    if dus < 14:
+                        pri, pc = "Haute", "#e5484d"
+                    elif dus < 30:
+                        pri, pc = "Moy", "#f79009"
                     else:
-                        pri, pc = ("Basse" if CLIENT_LANG == "fr" else "Low"), "#12b76a"
+                        pri, pc = "Basse", "#12b76a"
                     name = str(rr["product_name"])
                     if len(name) > 26:
                         name = name[:26] + "…"
-                    unit_lbl = "unités" if CLIENT_LANG == "fr" else "units"
-                    day_lbl = "j restants" if CLIENT_LANG == "fr" else "d left"
                     reo_html.append(f"""
                     <div class="reo-row">
                       <div style="flex:1; min-width:0;">
-                        <div class="reo-name">{_esc(name)}</div>
-                        <div class="reo-sub">{_esc(rr['warehouse'])} · {cov:.0f}{day_lbl}</div>
+                        <div class="reo-name">{name}</div>
+                        <div class="reo-sub">{rr['warehouse']} · {dus:.0f}j restants</div>
                       </div>
                       <div style="text-align:right;">
-                        <div class="reo-qty">{float(rr['qty'] or 0):,.0f} <span style="font-weight:500;color:#a5aec4;">{unit_lbl}</span></div>
+                        <div class="reo-qty">{rr['qty']:,.0f} <span style="font-weight:500;color:#a5aec4;">unités</span></div>
                         <span class="reo-pri" style="color:{pc};background:{pbg[pc]};">{pri}</span>
                       </div>
                     </div>""")
             else:
-                msg = ("Rien sous le seuil d'alerte." if CLIENT_LANG == "fr" else "Nothing below alert level.")
-                reo_html.append(f'<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">{msg}</p>')
+                reo_html.append('<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">Rien sous le seuil de réappro pour le moment.</p>')
         except Exception:
-            reo_html.append('<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">—</p>')
+            reo_html.append('<p style="padding:16px 0 4px; font-size:12.5px; color:#94a3b8;">Données de réappro indisponibles.</p>')
         reo_html.append("</div>")
         st.markdown("".join(reo_html), unsafe_allow_html=True)
 
@@ -1655,445 +1317,268 @@ with tab1:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2: INVENTORY DETAIL
 # ══════════════════════════════════════════════════════════════════════════════
+
 with tab2:
+
     inv_kpis = run_query("""
         SELECT
-            COUNT(*) FILTER (WHERE is_dead_stock) AS dead_count,
-            COUNT(*) FILTER (WHERE is_excess) AS excess_count,
-            COUNT(*) FILTER (WHERE is_stockout_risk) AS stockout_count,
-            COUNT(*) AS total_refs
+            COUNT(*) FILTER (WHERE is_dead_stock) AS dead_sku_count,
+            COUNT(*) FILTER (WHERE is_excess) AS excess_sku_count,
+            COUNT(*) FILTER (WHERE current_stock < reorder_point AND avg_daily_demand > 0) AS below_reorder
         FROM inventory
     """)
+
     if not inv_kpis.empty:
         r = inv_kpis.iloc[0]
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.markdown(kpi_card(T["dead_refs"], format_number(r["dead_count"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card("SKUs dormants", format_number(r["dead_sku_count"]), "kpi-danger"), unsafe_allow_html=True)
         with c2:
-            st.markdown(kpi_card(T["excess_refs"], format_number(r["excess_count"]), "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(kpi_card("SKUs excédentaires", format_number(r["excess_sku_count"]), "kpi-warning"), unsafe_allow_html=True)
         with c3:
-            st.markdown(kpi_card(T["kpi_stockout"], format_number(r["stockout_count"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Sous seuil de réappro", format_number(r["below_reorder"]), "kpi-danger"), unsafe_allow_html=True)
         with c4:
-            abc_data = run_query("SELECT abc_class, COUNT(*) as cnt FROM inventory WHERE abc_class IS NOT NULL GROUP BY abc_class ORDER BY abc_class")
+            abc_data = run_query("SELECT abc_class, COUNT(*) as cnt FROM inventory GROUP BY abc_class ORDER BY abc_class")
             abc_str = " | ".join([f"{row['abc_class']}: {row['cnt']}" for _, row in abc_data.iterrows()]) if not abc_data.empty else "N/A"
-            st.markdown(kpi_card(T["abc_split"], abc_str, "kpi-info", small=True), unsafe_allow_html=True)
-
-    st.write("")
-
-    # ── ABC × XYZ matrix ─────────────────────────────────────────────────────
-    st.subheader(T["chart_abcxyz"])
-    matrix = run_query("""
-        SELECT
-            COALESCE(abc_class, 'N/A') AS abc,
-            COALESCE(xyz_class, 'N/A') AS xyz,
-            COUNT(*) AS refs,
-            ROUND(SUM(current_stock * unit_cost)::numeric, 0) AS val
-        FROM inventory
-        GROUP BY abc_class, xyz_class
-    """)
-    if not matrix.empty:
-        mx_l, mx_r = st.columns([3, 2], gap="medium")
-        with mx_l:
-            pivot = matrix.pivot(index="abc", columns="xyz", values="val").fillna(0)
-            fig = px.imshow(
-                pivot, text_auto=".2s", aspect="auto",
-                labels=dict(x="XYZ", y="ABC", color=T["col_value"]),
-                color_continuous_scale=["#f5f3ff", "#c4b5fd", "#8b7cff", "#6355ff"],
-            )
-            fig = style_fig(fig, height=330)
-            fig.update_layout(coloraxis_showscale=False, margin=dict(l=10, r=10, t=10, b=20))
-            fig.update_traces(hovertemplate="ABC %{y} · XYZ %{x}<br>%{z:,.0f} " + CURRENCY + "<extra></extra>")
-            st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
-        with mx_r:
-            note = ("Les articles <b>AZ</b> — forte valeur, demande erratique — sont les plus difficiles à piloter. "
-                    "C'est là que se concentrent à la fois le surstock et les ruptures."
-                    if CLIENT_LANG == "fr" else
-                    "<b>AZ</b> items — high value, erratic demand — are the hardest to plan. "
-                    "That's where both overstock and stockouts concentrate.")
-            st.markdown(f'<div class="aurora-panel" style="font-size:12.5px;color:#475569;line-height:1.6;">{note}</div>',
-                        unsafe_allow_html=True)
-            mtab = matrix.copy()
-            mtab.columns = ["ABC", "XYZ", T["refs"], T["col_value"]]
-            mtab = mtab.sort_values(T["col_value"], ascending=False).head(9)
-            render_table(mtab, height=250, formats={
-                T["refs"]: "{:,.0f}",
-                T["col_value"]: lambda v: format_currency(v),
-            })
-
-    st.write("")
-
-    # ── Type breakdown table ─────────────────────────────────────────────────
-    st.subheader(T["chart_type_mix"])
-    type_detail = run_query("""
-        SELECT
-            i.article_type,
-            at.dead_stock_days,
-            COUNT(*) AS refs,
-            COUNT(*) FILTER (WHERE i.is_dead_stock) AS dead,
-            COUNT(*) FILTER (WHERE i.is_excess) AS excess,
-            COUNT(*) FILTER (WHERE i.is_stockout_risk) AS stockout,
-            ROUND(SUM(i.current_stock * i.unit_cost)::numeric, 0) AS val,
-            ROUND(SUM(i.trapped_value)::numeric, 0) AS trapped,
-            ROUND(SUM(i.excess_value)::numeric, 0) AS excess_val
-        FROM inventory i
-        LEFT JOIN article_types at ON at.code = i.article_type
-        GROUP BY i.article_type, at.dead_stock_days
-        ORDER BY val DESC
-    """)
-    if not type_detail.empty:
-        td = type_detail.copy()
-        td["article_type"] = td["article_type"].map(lambda x: f"{TN.get(x, x)} ({x})")
-        seuil = "Seuil dormance (j)" if CLIENT_LANG == "fr" else "Dormancy threshold (d)"
-        td.columns = [T["col_type"], seuil, T["refs"], T["dead_refs"], T["excess_refs"],
-                      T["kpi_stockout"], T["col_value"], T["col_trapped"], T["col_excess"]]
-        sortable_table(td, index=False, height=380, wrap=[T["col_type"]], formats={
-            seuil: "{:,.0f}", T["refs"]: "{:,.0f}", T["dead_refs"]: "{:,.0f}",
-            T["excess_refs"]: "{:,.0f}", T["kpi_stockout"]: "{:,.0f}",
-            T["col_value"]: lambda v: format_currency(v),
-            T["col_trapped"]: lambda v: format_currency(v),
-            T["col_excess"]: lambda v: format_currency(v),
-        })
+            st.markdown(kpi_card("Classification ABC", abc_str, "kpi-info"), unsafe_allow_html=True)
 
     st.write("")
 
     detail_left, detail_right = st.columns(2, gap="medium")
 
     with detail_left:
-        st.subheader(T["top_dead"])
+        st.subheader("Top 20 des SKUs dormants")
         top_dead = run_query("""
-            SELECT article_code, product_name, article_type,
-                   current_stock, unit_cost, trapped_value, days_since_movement
+            SELECT product_name, current_stock, unit_cost, inventory_value, days_of_supply
             FROM inventory
             WHERE is_dead_stock = true
-            ORDER BY trapped_value DESC
+            ORDER BY inventory_value DESC
             LIMIT 20
         """)
         if not top_dead.empty:
-            td2 = top_dead.copy()
-            td2["article_type"] = td2["article_type"].map(lambda x: TN.get(x, x))
-            td2.columns = [T["col_code"], T["col_product"], T["col_type"], T["col_stock"],
-                           T["col_cost"], T["col_trapped"], T["col_days_nomvt"]]
-            sortable_table(td2, index=True, height=520, wrap=[T["col_product"]], formats={
-                T["col_stock"]: "{:,.0f}",
-                T["col_cost"]: lambda v: f"{float(v):,.2f} {CURRENCY}",
-                T["col_trapped"]: lambda v: format_currency(v),
-                T["col_days_nomvt"]: "{:,.0f}",
-            })
+            top_dead.columns = ["Produit", "Stock", "Coût unitaire", "Valeur du stock", "Jours de stock"]
+            sortable_table(top_dead, index=True, height=520, wrap=["Produit"], formats={
+            "Stock": "{:,.0f}", "Coût unitaire": "${:,.2f}",
+            "Valeur du stock": "${:,.0f}", "Jours de stock": lambda v: "∞" if v and v >= 9000 else f"{int(v):,}" if v else "—",
+        })
         else:
-            alert_box("success", "✅ " + ("Aucune référence dormante." if CLIENT_LANG == "fr"
-                                          else "No dead references."))
-
+            alert_box("info", "Aucune donnée de stock dormant.")
     with detail_right:
-        st.subheader(T["coverage_dist"])
+        st.subheader("Répartition des jours de stock disponible")
         scatter_data = run_query("""
-            SELECT product_name, article_type, coverage_days,
-                   current_stock * unit_cost AS val,
-                   is_dead_stock, is_excess
+            SELECT product_name, days_of_supply, inventory_value, is_dead_stock, category
             FROM inventory
-            WHERE coverage_days IS NOT NULL AND coverage_days < 730
-              AND current_stock * unit_cost > 0
+            WHERE days_of_supply < 365 AND inventory_value > 0
         """)
+
         if not scatter_data.empty:
-            def _status(r):
-                if r["is_dead_stock"]:
-                    return T["kpi_dead"]
-                if r["is_excess"]:
-                    return T["kpi_excess"]
-                return T["legend_healthy"]
-            scatter_data["status"] = scatter_data.apply(_status, axis=1)
+            scatter_data["status"] = scatter_data["is_dead_stock"].map({True: "Dead Stock", False: "Healthy"})
             fig = px.scatter(
-                scatter_data, x="coverage_days", y="val", color="status",
-                color_discrete_map={
-                    T["kpi_dead"]: "#e5484d",
-                    T["kpi_excess"]: "#f79009",
-                    T["legend_healthy"]: "#12b76a",
-                },
-                hover_data=["product_name", "article_type"],
-                labels={"coverage_days": T["col_coverage"], "val": f"{T['col_value']} ({CURRENCY})",
-                        "status": ""},
+                scatter_data, x="days_of_supply", y="inventory_value", color="status",
+                color_discrete_map={"Dead Stock": "#e5484d", "Healthy": "#12b76a"},
+                hover_data=["product_name", "category"],
+                labels={"days_of_supply": "Days of Supply", "inventory_value": "Inventory Value ($)", "status": "Status"},
                 log_y=True,
             )
             fig = style_fig(fig, height=500, legend=True)
             st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
         else:
-            alert_box("info", T["no_data"])
+            st.info("No inventory data for scatter chart.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 3: SUPPLIERS
+# TAB 3: OPERATIONS
 # ══════════════════════════════════════════════════════════════════════════════
+
 with tab3:
-    sup_kpis = run_query(f"""
+
+    ops_kpis = run_query(f"""
         SELECT
-            COALESCE(ROUND(100.0 * SUM(CASE WHEN received_date <= promised_date THEN 1 ELSE 0 END)
-                     / NULLIF(COUNT(promised_date), 0), 1), 0) AS otd_rate,
-            COALESCE(ROUND(AVG(received_date - order_date)::numeric, 1), 0) AS avg_lt,
-            COALESCE(ROUND(STDDEV(received_date - order_date)::numeric, 1), 0) AS lt_std,
-            COUNT(DISTINCT supplier_name) AS n_suppliers,
-            COUNT(*) AS n_lines
-        FROM purchase_orders
-        WHERE received_date IS NOT NULL AND order_date IS NOT NULL
+            COALESCE(
+                COUNT(*) FILTER (WHERE late_delivery_risk = 0)::numeric
+                / NULLIF(COUNT(*)::numeric, 0) * 100, 0
+            ) AS otd_rate,
+            COALESCE(AVG(days_for_shipping_real), 0) AS avg_lead_time,
+            COALESCE(STDDEV(days_for_shipping_real), 0) AS lead_time_variance,
+            COALESCE(SUM(total_amount) / NULLIF(COUNT(DISTINCT order_id)::numeric, 0), 0) AS cost_per_order,
+            COALESCE(AVG(days_for_shipping_real), 0) AS avg_fulfillment_time
+        FROM orders {ORDERS_WHERE}
     """)
-    if not sup_kpis.empty:
-        r = sup_kpis.iloc[0]
+
+    if not ops_kpis.empty:
+        r = ops_kpis.iloc[0]
         c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
-            otdv = float(r["otd_rate"])
-            st.markdown(kpi_card(T["kpi_otd"], format_pct(otdv),
-                                 "kpi-danger" if otdv < 70 else ("kpi-warning" if otdv < 85 else "kpi-success")),
-                        unsafe_allow_html=True)
+            st.markdown(kpi_card("Taux OTD fournisseur", format_pct(r["otd_rate"]),
+                "kpi-danger" if r["otd_rate"] < 80 else "kpi-success"), unsafe_allow_html=True)
         with c2:
-            st.markdown(kpi_card(T["col_lt"], f"{float(r['avg_lt']):.1f} j", "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Délai moyen", f"{r['avg_lead_time']:.1f} jours", "kpi-info"), unsafe_allow_html=True)
         with c3:
-            st.markdown(kpi_card(T["col_ltstd"], f"± {float(r['lt_std']):.1f} j", "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Variance du délai", f"{r['lead_time_variance']:.2f}", "kpi-warning"), unsafe_allow_html=True)
         with c4:
-            lbl = "Fournisseurs actifs" if CLIENT_LANG == "fr" else "Active suppliers"
-            st.markdown(kpi_card(lbl, format_number(r["n_suppliers"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Coût par commande", format_currency(r["cost_per_order"]), "kpi-info"), unsafe_allow_html=True)
         with c5:
-            lbl = "Lignes réceptionnées" if CLIENT_LANG == "fr" else "Received lines"
-            st.markdown(kpi_card(lbl, format_number(r["n_lines"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Traitement moyen", f"{r['avg_fulfillment_time']:.1f} jours", "kpi-info"), unsafe_allow_html=True)
 
     st.write("")
 
-    seg_l, seg_r = st.columns([3, 2], gap="medium")
+    ops_left, ops_right = st.columns(2, gap="medium")
 
-    with seg_l:
-        st.subheader(T["supplier_seg"])
-        dist = run_query("""
-            SELECT supplier_category, COUNT(*) AS n,
-                   SUM(commandes_total) AS cmds,
-                   ROUND(AVG(otd_when_measurable)::numeric, 1) AS otd,
-                   ROUND(AVG(cv_lead_time)::numeric, 2) AS cv
-            FROM v_supplier_scorecard_robust
-            GROUP BY supplier_category
+    with ops_left:
+        st.subheader("Livraison fournisseur à l'heure par région")
+        otd_region = run_query(f"""
+            SELECT
+                order_region,
+                COUNT(*) AS total_orders,
+                ROUND(COUNT(*) FILTER (WHERE late_delivery_risk = 0)::numeric
+                    / NULLIF(COUNT(*)::numeric, 0) * 100, 1) AS otd_rate,
+                ROUND(AVG(days_for_shipping_real)::numeric, 2) AS avg_lead_time
+            FROM orders {ORDERS_WHERE}
+            GROUP BY order_region
+            ORDER BY total_orders DESC
         """)
-        if not dist.empty:
-            order = ["critical", "unstable", "weak", "acceptable", "solid", "no_promised_data"]
-            dist["ord"] = dist["supplier_category"].map(lambda x: order.index(x) if x in order else 99)
-            dist = dist.sort_values("ord")
-            dist["label"] = dist["supplier_category"].map(lambda x: CN.get(x, x))
-            cmap = {
-                CN["critical"]: "#e5484d", CN["unstable"]: "#f97316", CN["weak"]: "#f79009",
-                CN["acceptable"]: "#3b82f6", CN["solid"]: "#12b76a", CN["no_promised_data"]: "#94a3b8",
-            }
-            fig = px.bar(dist, x="label", y="n", color="label", color_discrete_map=cmap, text="n")
-            fig = style_fig(fig, height=320)
-            fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="")
-            fig.update_traces(textposition="outside",
-                              hovertemplate="<b>%{x}</b><br>%{y} " +
-                              ("fournisseurs" if CLIENT_LANG == "fr" else "suppliers") + "<extra></extra>")
-            try:
-                fig.update_traces(marker_cornerradius=6)
-            except Exception:
-                pass
+        if not otd_region.empty:
+            otd_region.columns = ["Région", "Total commandes", "Taux OTD %", "Délai moyen"]
+            sortable_table(otd_region, index=True, height=380, formats={
+    "Total commandes": "{:,.0f}", "Taux OTD %": "{:.1f}", "Délai moyen": "{:.2f}",
+})
+        else:
+            alert_box("info", "Aucune donnée de commande.")
+
+    with ops_right:
+        st.subheader("Répartition des statuts de livraison")
+        delivery_status = run_query(f"""
+            SELECT delivery_status, COUNT(*) AS order_count
+            FROM orders {ORDERS_WHERE}
+            GROUP BY delivery_status
+            ORDER BY order_count DESC
+        """)
+        if not delivery_status.empty:
+            fig = px.pie(
+                delivery_status, values="order_count", names="delivery_status", hole=0.55,
+                color_discrete_sequence=["#e5484d", "#6355ff", "#f79009", "#12b76a"],
+            )
+            fig.update_traces(marker=dict(line=dict(color="#ffffff", width=2)))
+            fig = style_fig(fig, height=350, legend=True)
             st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
         else:
-            alert_box("info", T["no_data"])
-
-    with seg_r:
-        if CLIENT_LANG == "fr":
-            actions = """
-            <div class="aurora-panel" style="font-size:12.5px;color:#475569;line-height:1.65;">
-              <div style="font-weight:700;color:#0f172a;font-size:14px;margin-bottom:10px;">Plan d'action par segment</div>
-              <div style="padding:7px 0;border-top:1px solid #f1f2f8;"><b style="color:#e5484d;">Critique</b> — revue fournisseur immédiate, clause de pénalité, sourcing alternatif.</div>
-              <div style="padding:7px 0;border-top:1px solid #f1f2f8;"><b style="color:#f97316;">Instable</b> — double sourcing sous 3 mois, stock de sécurité renforcé.</div>
-              <div style="padding:7px 0;border-top:1px solid #f1f2f8;"><b style="color:#f79009;">Faible</b> — renégocier les dates promises. Ils décrochent de peu : ajouter 3 jours de coussin remonte l'OTD sans effort côté fournisseur.</div>
-              <div style="padding:7px 0;border-top:1px solid #f1f2f8;"><b style="color:#3b82f6;">Acceptable</b> — surveillance trimestrielle.</div>
-              <div style="padding:7px 0;border-top:1px solid #f1f2f8;"><b style="color:#12b76a;">Solide</b> — à utiliser comme référence de négociation.</div>
-            </div>"""
-        else:
-            actions = """
-            <div class="aurora-panel" style="font-size:12.5px;color:#475569;line-height:1.65;">
-              <div style="font-weight:700;color:#0f172a;font-size:14px;margin-bottom:10px;">Action plan by segment</div>
-              <div style="padding:7px 0;border-top:1px solid #f1f2f8;"><b style="color:#e5484d;">Critical</b> — immediate business review, penalty clause, alternative sourcing.</div>
-              <div style="padding:7px 0;border-top:1px solid #f1f2f8;"><b style="color:#f97316;">Unstable</b> — dual-source within 3 months, raise safety stock.</div>
-              <div style="padding:7px 0;border-top:1px solid #f1f2f8;"><b style="color:#f79009;">Weak</b> — renegotiate promised dates. They miss by a few days: adding a 3-day buffer lifts OTD with no supplier-side change.</div>
-              <div style="padding:7px 0;border-top:1px solid #f1f2f8;"><b style="color:#3b82f6;">Acceptable</b> — quarterly monitoring.</div>
-              <div style="padding:7px 0;border-top:1px solid #f1f2f8;"><b style="color:#12b76a;">Solid</b> — use as negotiation benchmark.</div>
-            </div>"""
-        st.markdown(actions, unsafe_allow_html=True)
-
-    st.write("")
-    st.subheader(T["supplier_detail"])
-
-    sup_all = run_query("""
-        SELECT supplier_name, supplier_category, commandes_total,
-               lt_moyen, lt_stddev, cv_lead_time, otd_when_measurable,
-               pct_livraison_partielle, risk_score
-        FROM v_supplier_scorecard_robust
-        ORDER BY risk_score DESC
-    """)
-    if not sup_all.empty:
-        f1, f2 = st.columns([1, 3])
-        with f1:
-            cats = ([T["all_actions"]] +
-                    [CN.get(c, c) for c in sup_all["supplier_category"].dropna().unique().tolist()])
-            sel_cat = st.selectbox("cat", cats, key="sup_cat", label_visibility="collapsed")
-        with f2:
-            sup_q = st.text_input("q", key="sup_search",
-                                  placeholder="🔍  " + (T["col_supplier"] + "…"),
-                                  label_visibility="collapsed")
-
-        view = sup_all.copy()
-        view["cat_label"] = view["supplier_category"].map(lambda x: CN.get(x, x))
-        if sel_cat != T["all_actions"]:
-            view = view[view["cat_label"] == sel_cat]
-        if sup_q:
-            view = view[view["supplier_name"].astype(str).str.contains(sup_q, case=False, na=False)]
-
-        st.markdown(
-            f'<div style="font-size:12px;color:#94a3b8;margin:2px 0 8px;">'
-            f'{T["showing"]} {len(view)} {T["of"]} {len(sup_all)} · {T["sort_hint"]}</div>',
-            unsafe_allow_html=True)
-
-        partial = "Livr. partielles %" if CLIENT_LANG == "fr" else "Partial deliv. %"
-        out = view[["supplier_name", "cat_label", "commandes_total", "lt_moyen", "lt_stddev",
-                    "cv_lead_time", "otd_when_measurable", "pct_livraison_partielle", "risk_score"]].copy()
-        out.columns = [T["col_supplier"], T["col_category"], T["col_orders"], T["col_lt"],
-                       T["col_ltstd"], T["col_cv"], T["col_otd"], partial, T["col_risk"]]
-        sortable_table(out, index=True, height=560, wrap=[T["col_supplier"]],
-                       cell_style={T["col_category"]: _bg_category}, formats={
-            T["col_orders"]: "{:,.0f}", T["col_lt"]: "{:,.1f}", T["col_ltstd"]: "{:,.1f}",
-            T["col_cv"]: "{:.2f}", T["col_otd"]: "{:.1f}%", partial: "{:.1f}%",
-            T["col_risk"]: "{:.1f}",
-        })
-    else:
-        alert_box("info", T["no_data"])
+            st.info("No delivery data.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4: REORDER RECOMMENDATIONS
 # ══════════════════════════════════════════════════════════════════════════════
+
 with tab4:
-    reo_kpis = run_query("""
+
+    reorder_kpis = run_query("""
         SELECT
-            COUNT(*) FILTER (WHERE is_stockout_risk) AS at_risk,
-            COALESCE(MIN(coverage_days) FILTER (WHERE is_stockout_risk AND coverage_days IS NOT NULL), 0) AS min_cov,
+            COUNT(*) FILTER (WHERE current_stock < reorder_point AND avg_daily_demand > 0) AS below_reorder,
+            COALESCE(MIN(
+                CASE WHEN avg_daily_demand > 0
+                    THEN ROUND(current_stock / avg_daily_demand)
+                    ELSE NULL END
+            ), 0) AS most_urgent_days,
             (SELECT product_name FROM inventory
-             WHERE is_stockout_risk AND coverage_days IS NOT NULL
-             ORDER BY coverage_days ASC LIMIT 1) AS most_urgent,
-            COUNT(*) FILTER (WHERE calculated_reorder_point IS NOT NULL
-                             AND erp_reorder_point IS NOT NULL
-                             AND ABS(calculated_reorder_point - erp_reorder_point) / NULLIF(erp_reorder_point,0) > 0.25) AS drifted
+             WHERE avg_daily_demand > 0
+             ORDER BY current_stock / avg_daily_demand ASC
+             LIMIT 1) AS most_urgent_sku,
+            COALESCE(SUM(
+                CASE WHEN current_stock < reorder_point AND avg_daily_demand > 0
+                    THEN avg_daily_demand * 30 * unit_cost ELSE 0 END
+            ), 0) AS stockout_cost
         FROM inventory
     """)
-    if not reo_kpis.empty:
-        r = reo_kpis.iloc[0]
+
+    if not reorder_kpis.empty:
+        r = reorder_kpis.iloc[0]
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.markdown(kpi_card(T["kpi_stockout"], format_number(r["at_risk"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card("SKUs sous seuil", format_number(r["below_reorder"]), "kpi-danger"), unsafe_allow_html=True)
         with c2:
-            lbl = "Couverture mini" if CLIENT_LANG == "fr" else "Min coverage"
-            st.markdown(kpi_card(lbl, f"{float(r['min_cov'] or 0):.0f} j", "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Rupture la + urgente", f"{r['most_urgent_days']:.0f} jours", "kpi-danger"), unsafe_allow_html=True)
         with c3:
-            lbl = "Réf la + urgente" if CLIENT_LANG == "fr" else "Most urgent ref"
-            st.markdown(kpi_card(lbl, _esc(str(r["most_urgent"] or "—")), "kpi-warning", small=True),
-                        unsafe_allow_html=True)
+            sku_name = _esc(r["most_urgent_sku"] or "N/A")
+            st.markdown(kpi_card("SKU le + urgent", sku_name, "kpi-warning", small=True), unsafe_allow_html=True)
         with c4:
-            lbl = "Paramètres ERP dérivés" if CLIENT_LANG == "fr" else "Drifted ERP params"
-            st.markdown(kpi_card(lbl, format_number(r["drifted"]), "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Coût de rupture / Mois", format_currency(r["stockout_cost"]), "kpi-danger"), unsafe_allow_html=True)
 
     st.write("")
-    st.subheader(T["reorder_table"])
 
-    _a_reorder = T["act_reorder"]
-    _a_liquidate = T["act_liquidate"]
-    _a_stop = T["act_stop"]
-    _a_hold = T["act_hold"]
-
-    reorder_table = run_query(f"""
+    st.subheader("Tableau des recommandations de réapprovisionnement")
+    reorder_table = run_query("""
         SELECT
-            article_code, product_name, article_type, warehouse,
+            product_name,
             current_stock,
-            ROUND(COALESCE(avg_daily_consumption, 0)::numeric, 2) AS daily,
-            COALESCE(actual_lead_time_days, erp_lead_time_days, lead_time_days) AS lt,
-            ROUND(COALESCE(erp_safety_stock, 0)::numeric, 0) AS ss_erp,
-            ROUND(COALESCE(calculated_safety_stock, 0)::numeric, 0) AS ss_calc,
-            ROUND(COALESCE(erp_reorder_point, 0)::numeric, 0) AS rop_erp,
-            ROUND(COALESCE(calculated_reorder_point, 0)::numeric, 0) AS rop_calc,
-            GREATEST(COALESCE(moq, 1),
-                ROUND(GREATEST(0, COALESCE(calculated_reorder_point, 0) - current_stock))) AS qty,
-            ROUND(COALESCE(coverage_days, 9999)::numeric, 0) AS days_out,
+            avg_daily_demand,
+            supplier_lead_time_days,
+            CASE WHEN avg_daily_demand > 0 AND unit_cost > 0
+                THEN ROUND(SQRT((2 * avg_daily_demand * 365 * 50) / (unit_cost * 0.25)))
+                ELSE 0 END AS eoq,
+            CASE WHEN avg_daily_demand > 0 AND unit_cost > 0
+                THEN GREATEST(100, ROUND(SQRT((2 * avg_daily_demand * 365 * 50) / (unit_cost * 0.25)) / 100) * 100)
+                ELSE 100 END AS moq,
+            ROUND(avg_daily_demand * supplier_lead_time_days * 1.5) AS suggested_reorder_point,
+            CASE WHEN avg_daily_demand > 0
+                THEN ROUND(current_stock / avg_daily_demand)
+                ELSE 9999 END AS days_until_stockout,
             CASE
-                WHEN is_stockout_risk THEN '{_a_reorder}'
-                WHEN is_dead_stock THEN '{_a_liquidate}'
-                WHEN is_excess THEN '{_a_stop}'
-                ELSE '{_a_hold}'
-            END AS action
+                WHEN current_stock < ROUND(avg_daily_demand * supplier_lead_time_days * 1.5)
+                    THEN 'Reorder'
+                WHEN is_dead_stock THEN 'Discount or liquidate'
+                ELSE 'Hold'
+            END AS recommended_action
         FROM inventory
-        WHERE avg_daily_consumption > 0
-        ORDER BY coverage_days ASC NULLS LAST
-        LIMIT 300
+        WHERE avg_daily_demand > 0
+        ORDER BY
+            CASE WHEN avg_daily_demand > 0 THEN current_stock / avg_daily_demand ELSE 9999 END ASC
+        LIMIT 50
     """)
 
     if not reorder_table.empty:
-        rt = reorder_table.copy()
-        rt["article_type"] = rt["article_type"].map(lambda x: TN.get(x, x))
-        daily_lbl = "Conso/jour" if CLIENT_LANG == "fr" else "Daily use"
-        rt.columns = [T["col_code"], T["col_product"], T["col_type"], T["col_warehouse"],
-                      T["col_stock"], daily_lbl, T["col_lt"], T["col_ss_erp"], T["col_ss_calc"],
-                      T["col_rop_erp"], T["col_rop_calc"], T["col_qty"], T["col_days_out"], T["col_action"]]
+        reorder_table.columns = [
+            "Produit", "Stock actuel", "Demande quotidienne moyenne", "Délai de livraison (jours)",
+            "EOQ", "MOQ", "Point de commande", "Jours jusqu'à rupture", "Action"
+        ]
 
-        fcol1, fcol2, fcol3 = st.columns([3, 1, 1])
+        fcol1, fcol2 = st.columns([3, 1])
         with fcol1:
-            reo_q = st.text_input("Search", key="reo_search",
-                                  placeholder=T["search_product"], label_visibility="collapsed")
+            reo_q = st.text_input("Search product", key="reo_search",
+                                  placeholder="🔍  Filtrer par nom de produit…", label_visibility="collapsed")
         with fcol2:
-            actions_list = [T["all_actions"]] + sorted(rt[T["col_action"]].dropna().unique().tolist())
-            reo_act = st.selectbox("Action", actions_list, key="reo_action", label_visibility="collapsed")
-        with fcol3:
-            types_list = [T["all_types"]] + sorted(rt[T["col_type"]].dropna().unique().tolist())
-            reo_type = st.selectbox("Type", types_list, key="reo_type", label_visibility="collapsed")
+            actions = ["Toutes les actions"] + sorted(reorder_table["Action"].dropna().unique().tolist())
+            reo_act = st.selectbox("Action à mener", actions, key="reo_action", label_visibility="collapsed")
 
-        view = rt.copy()
+        view = reorder_table.copy()
         if reo_q:
-            mask = (view[T["col_product"]].astype(str).str.contains(reo_q, case=False, na=False) |
-                    view[T["col_code"]].astype(str).str.contains(reo_q, case=False, na=False))
-            view = view[mask]
-        if reo_act != T["all_actions"]:
-            view = view[view[T["col_action"]] == reo_act]
-        if reo_type != T["all_types"]:
-            view = view[view[T["col_type"]] == reo_type]
+            view = view[view["Produit"].astype(str).str.contains(reo_q, case=False, na=False)]
+        if reo_act and reo_act != "Toutes les actions":
+            view = view[view["Action"] == reo_act]
 
-        st.markdown(
-            f'<div style="font-size:12px;color:#94a3b8;margin:2px 0 8px;">'
-            f'{T["showing"]} {len(view)} {T["of"]} {len(rt)} {T["refs"]} · {T["sort_hint"]}</div>',
-            unsafe_allow_html=True)
-
-        sortable_table(view, height=620, wrap=[T["col_product"], T["col_action"]], cell_style={
-            T["col_days_out"]: _bg_days_out, T["col_action"]: _bg_action,
+        st.markdown(f'<div style="font-size:12px;color:#94a3b8;margin:2px 0 8px;">Showing {len(view)} of {len(reorder_table)} SKUs · click any column header to sort</div>', unsafe_allow_html=True)
+        sortable_table(view, height=620, wrap=["Produit", "Action"], cell_style={
+            "Jours jusqu'à rupture": _bg_stockout, "Action": _bg_action,
         }, formats={
-            T["col_stock"]: "{:,.0f}", daily_lbl: "{:,.2f}", T["col_lt"]: "{:,.0f}",
-            T["col_ss_erp"]: "{:,.0f}", T["col_ss_calc"]: "{:,.0f}",
-            T["col_rop_erp"]: "{:,.0f}", T["col_rop_calc"]: "{:,.0f}",
-            T["col_qty"]: "{:,.0f}",
-            T["col_days_out"]: lambda v: "∞" if float(v) >= 9000 else f"{float(v):,.0f}",
+            "Stock actuel": "{:,.0f}", "Demande quotidienne moyenne": "{:,.1f}", "Délai de livraison (jours)": "{:,.0f}",
+            "EOQ": "{:,.0f}", "MOQ": "{:,.0f}", "Point de commande": "{:,.0f}", "Jours jusqu'à rupture": "{:,.0f}",
         })
-
-        note = ("Les colonnes <b>SS/PC ERP</b> montrent ce qui est paramétré dans votre système ; "
-                "<b>SS/PC calculé</b> montre ce que la demande réelle et la variabilité fournisseur imposent. "
-                "L'écart entre les deux est la cause directe de vos ruptures et de votre surstock."
-                if CLIENT_LANG == "fr" else
-                "The <b>SS/ROP ERP</b> columns show what is configured in your system; "
-                "<b>SS/ROP calc</b> shows what real demand and supplier variability actually require. "
-                "The gap between the two is the direct cause of your stockouts and overstock.")
-        st.markdown(f'<div style="font-size:12px;color:#94a3b8;margin-top:8px;line-height:1.5;">{note}</div>',
-                    unsafe_allow_html=True)
     else:
-        alert_box("info", T["no_data"])
+        alert_box("info", "Aucune donnée de réapprovisionnement disponible.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 5: AI ASSISTANT
+# TAB 5: AI ASSISTANT (Claude API with tool calling)
 # ══════════════════════════════════════════════════════════════════════════════
+import uuid
+ 
 with tab5:
-    st.subheader(T["ai_title"])
-    st.caption(T["ai_caption"])
-
-    with st.expander(T["ai_check"]):
-        if st.button(T["ai_test"], key="ai_test_btn"):
+    st.subheader("🤖 Analyste Supply Chain IA")
+    st.caption("Posez vos questions sur vos stocks, commandes et opérations en langage naturel.")
+ 
+    with st.expander("🔌 Vérification de la connexion"):
+        if st.button("Tester la connexion à l'IA", key="ai_test"):
             if not ANTHROPIC_API_KEY:
-                alert_box("error", "❌ No anthropic_api_key found in secrets.")
+                alert_box("error", "❌ Aucune clé anthropic_api_key trouvée dans les secrets.")
             else:
                 try:
                     import anthropic as _an
@@ -2102,10 +1587,11 @@ with tab5:
                         model="claude-haiku-4-5-20251001", max_tokens=20,
                         messages=[{"role": "user", "content": "Reply with exactly: OK"}],
                     )
-                    alert_box("success", "✅ API OK — " + _esc(_r.content[0].text))
+                    alert_box("success", "✅ L'API fonctionne — réponse : " + _esc(_r.content[0].text))
                 except Exception as e:
                     alert_box("error", "❌ " + _esc(str(e)))
-
+ 
+    # ── Initialize state ─────────────────────────────────────────────
     if "ai_messages" not in st.session_state:
         st.session_state.ai_messages = []
     if "processed_ids" not in st.session_state:
@@ -2114,440 +1600,527 @@ with tab5:
         st.session_state.next_question = None
     if "next_question_id" not in st.session_state:
         st.session_state.next_question_id = None
-
-    st.markdown(f'<div style="font-size:13px;font-weight:700;margin:2px 0 8px;">{T["ai_try"]}</div>',
+ 
+    # ── Suggestion buttons ───────────────────────────────────────────
+    st.markdown('<div style="font-size:13px;font-weight:700;margin:2px 0 8px;">Essayez de demander</div>',
                 unsafe_allow_html=True)
     sug_cols = st.columns(4)
-    if CLIENT_LANG == "fr":
-        suggestions = [
-            "Quelles références dois-je liquider en priorité et pour quel montant ?",
-            "Quels fournisseurs causent le plus de ruptures et pourquoi ?",
-            "Mes paramètres ERP sont-ils encore à jour ?",
-            "Où est bloquée ma trésorerie par famille d'articles ?",
-        ]
-    else:
-        suggestions = [
-            "Which references should I liquidate first and for how much?",
-            "Which suppliers cause the most stockouts and why?",
-            "Are my ERP parameters still up to date?",
-            "Where is my cash tied up by article family?",
-        ]
+    suggestions = [
+        "Quelle est la valeur de notre stock dormant par catégorie ?",
+        "Quels SKUs seront en rupture cette semaine ?",
+        "Que dois-je réapprovisionner en priorité ?",
+        "Où est bloqué le cash dans mes entrepôts ?",
+    ]
     for i, sug in enumerate(suggestions):
         with sug_cols[i]:
             if st.button(sug, key=f"sug_{i}", use_container_width=True):
                 st.session_state.next_question = sug
                 st.session_state.next_question_id = str(uuid.uuid4())
-
+ 
+    # ── Render conversation from state ───────────────────────────────
     for msg in st.session_state.ai_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["display"], unsafe_allow_html=True)
             for _sql, df in msg.get("dataframes", []):
-                with st.expander(T["ai_see_data"]):
+                with st.expander("📊 Voir les données"):
                     render_table(df, index=True, height=300)
-
+ 
+    # ── PROCESSING BLOCK — renders inline BELOW history, ABOVE form ──
     q = st.session_state.next_question
     qid = st.session_state.next_question_id
     already_done = qid in st.session_state.processed_ids if qid else True
-
+ 
     if q and qid and not already_done:
         st.session_state.processed_ids.add(qid)
-        st.session_state.ai_messages.append({"role": "user", "display": q, "dataframes": [], "id": qid})
-
+ 
+        st.session_state.ai_messages.append({
+            "role": "user", "display": q, "dataframes": [], "id": qid
+        })
+ 
         with st.chat_message("user"):
             st.markdown(q)
-
+ 
         with st.chat_message("assistant"):
-            placeholder = st.empty()
-            history = [{"role": m["role"], "content": m["display"]}
-                       for m in st.session_state.ai_messages[:-1]]
-            try:
-                answer, dataframes = ask_claude(q, history, text_placeholder=placeholder)
-            except Exception as e:
-                answer = f"⚠️ {e}"
-                dataframes = []
-                placeholder.markdown(answer)
+            with st.spinner("Analyse de vos données…"):
+                history = [{"role": m["role"], "content": m["display"]}
+                           for m in st.session_state.ai_messages[:-1]]
+                try:
+                    answer, dataframes = ask_claude(q, history)
+                except Exception as e:
+                    answer = f"⚠️ Erreur : {e}"
+                    dataframes = []
+            st.markdown(answer, unsafe_allow_html=True)
             for _sql, df in dataframes:
-                with st.expander(T["ai_see_data"]):
+                with st.expander("📊 Voir les données"):
                     render_table(df, index=True, height=300)
-
-        st.session_state.ai_messages.append(
-            {"role": "assistant", "display": answer, "dataframes": dataframes, "id": qid})
+ 
+        st.session_state.ai_messages.append({
+            "role": "assistant", "display": answer, "dataframes": dataframes, "id": qid
+        })
+ 
         st.session_state.next_question = None
         st.session_state.next_question_id = None
-
+ 
+    # ── Form input — always pinned below the latest exchange ─────────
     with st.form("ai_form", clear_on_submit=True):
         col_in, col_btn = st.columns([6, 1])
         with col_in:
             user_input = st.text_input(
-                T["ai_placeholder"], key="ai_input", label_visibility="collapsed",
-                placeholder=T["ai_placeholder"],
+                "Posez une question sur vos données supply chain…",
+                key="ai_input", label_visibility="collapsed",
+                placeholder="Posez une question sur vos données supply chain…",
             )
         with col_btn:
-            submitted = st.form_submit_button(T["ai_send"], use_container_width=True)
-
+            submitted = st.form_submit_button("Envoyer", use_container_width=True)
+ 
     if submitted and user_input:
         st.session_state.next_question = user_input
         st.session_state.next_question_id = str(uuid.uuid4())
-        st.rerun()
-
+        st.rerun()   # fresh run so the processing block renders ABOVE the form
+ 
+    # ── Clear conversation ───────────────────────────────────────────
     if st.session_state.ai_messages:
-        if st.button(T["ai_clear"]):
+        if st.button("🗑️ Effacer la conversation"):
             st.session_state.ai_messages = []
             st.session_state.processed_ids = set()
             st.session_state.next_question = None
             st.session_state.next_question_id = None
             st.rerun()
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 6: DATA HEALTH
+# TAB 6: ALERT HISTORY
 # ══════════════════════════════════════════════════════════════════════════════
+
 with tab6:
-    st.subheader(T["health_title"])
-    st.caption(T["health_caption"])
+    st.subheader("🔔 Historique des alertes & configuration")
 
-    st.markdown(f"### {T['health_freshness']}")
+    alert_col1, alert_col2 = st.container(), st.container()
+
+    with alert_col1:
+        st.markdown("### Historique des KPI")
+
+        daily_kpis = run_query("""
+            SELECT kpi_date, dead_stock_value, excess_stock_value,
+                   total_inventory_value, stockout_cost, supplier_otd_rate
+            FROM daily_kpis
+            ORDER BY kpi_date DESC
+            LIMIT 30
+        """)
+
+        if not daily_kpis.empty:
+            daily_kpis.columns = ["Date", "Stock dormant", "Stock excédentaire",
+                         "Stock total", "Coût de rupture", "Taux OTD"]
+            daily_kpis["Date"] = daily_kpis["Date"].astype(str)
+            sortable_table(daily_kpis, index=True, height=460, formats={
+    "Stock dormant": "${:,.0f}", "Stock excédentaire": "${:,.0f}", "Stock total": "${:,.0f}",
+    "Coût de rupture": "${:,.0f}", "Taux OTD": "{:.1f}%",
+})
+        else:
+            alert_box("info", "Aucun historique de KPI pour l'instant. Lancez le pipeline n8n pour commencer à peupler les KPI quotidiens.")
+
+    with alert_col2:
+        st.markdown("### Seuils d'alerte")
+        st.markdown('<div style="font-size:13px;color:#64748b;margin-bottom:8px;">Current alert configuration (editable in the n8n workflow).</div>', unsafe_allow_html=True)
+        thresholds = pd.DataFrame([
+            ["Stock dormant", "inventory_value > $5,000", "🟢 Active"],
+            ["Stock excédentaire", "excess_value > $5,000", "🟢 Active"],
+            ["Risque de rupture", "days_until_stockout < 14", "🟢 Active"],
+            ["Résumé hebdomadaire", "Every Monday 8am", "🟢 Active"],
+            ["Alertes narratives IA", "Per-SKU recommendations", "🟢 Active"],
+        ], columns=["Type d'alerte", "Seuil", "Statut"])
+        sortable_table(thresholds, wrap=["Seuil"], height=280)
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 7: DATA HEALTH
+# ════════════════════════════════════
+with tab7:
+    st.subheader("🏥 Moniteur de santé des données")
+    st.caption("Contrôles qualité des données en temps réel sur vos tables de commandes et de stock.")
+
+    st.markdown("### Fraîcheur des données")
     freshness = run_query("""
         SELECT
-            (SELECT COUNT(*) FROM inventory) AS n_refs,
-            (SELECT COUNT(*) FROM stock_movements) AS n_mvt,
-            (SELECT COUNT(*) FROM purchase_orders) AS n_po,
-            (SELECT MAX(movement_date)::date FROM stock_movements) AS last_mvt,
-            (SELECT MAX(order_date)::date FROM purchase_orders) AS last_po
+            (SELECT COUNT(*) FROM orders) AS total_orders,
+            (SELECT COUNT(*) FROM inventory) AS total_skus,
+            (SELECT MAX(order_date) FROM orders) AS latest_order,
+            (SELECT MAX(updated_at) FROM inventory) AS last_inventory_update
     """)
+
     if not freshness.empty:
         f = freshness.iloc[0]
         fc1, fc2, fc3, fc4 = st.columns(4)
         with fc1:
-            st.markdown(kpi_card(T["refs"], format_number(f["n_refs"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Total commandes", format_number(f["total_orders"]), "kpi-info"), unsafe_allow_html=True)
         with fc2:
-            lbl = "Mouvements" if CLIENT_LANG == "fr" else "Movements"
-            st.markdown(kpi_card(lbl, format_number(f["n_mvt"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Total SKUs", format_number(f["total_skus"]), "kpi-info"), unsafe_allow_html=True)
         with fc3:
-            lbl = "Lignes de commande" if CLIENT_LANG == "fr" else "PO lines"
-            st.markdown(kpi_card(lbl, format_number(f["n_po"]), "kpi-info"), unsafe_allow_html=True)
+            latest = str(f["latest_order"])[:10] if f["latest_order"] else "N/A"
+            st.markdown(kpi_card("Latest Order", latest, "kpi-info"), unsafe_allow_html=True)
         with fc4:
-            lbl = "Dernier mouvement" if CLIENT_LANG == "fr" else "Last movement"
-            lm = str(f["last_mvt"]) if f["last_mvt"] else "—"
-            st.markdown(kpi_card(lbl, lm, "kpi-info"), unsafe_allow_html=True)
+            inv_update = str(f["last_inventory_update"])[:10] if f["last_inventory_update"] else "N/A"
+            st.markdown(kpi_card("Last Inventory Sync", inv_update, "kpi-info"), unsafe_allow_html=True)
 
     st.write("")
 
-    hl, hr = st.columns(2, gap="medium")
+    health_left, health_right = st.columns(2, gap="medium")
 
-    with hl:
-        st.markdown(f"### {T['health_audit']}")
-        quality = run_query("""
-            SELECT table_name, issue_code,
-                   issue_label_fr, issue_label_en,
-                   affected_rows, severity
-            FROM data_quality_log
-            WHERE audit_date >= CURRENT_DATE - INTERVAL '2 days'
-            ORDER BY
-                CASE severity WHEN 'critical' THEN 1 ELSE 2 END,
-                affected_rows DESC
-        """)
-        if not quality.empty:
-            label_col = "issue_label_fr" if CLIENT_LANG == "fr" else "issue_label_en"
-            qv = quality[["table_name", label_col, "affected_rows", "severity"]].copy()
-            issue_lbl = "Contrôle" if CLIENT_LANG == "fr" else "Check"
-            rows_lbl = "Lignes" if CLIENT_LANG == "fr" else "Rows"
-            sev_lbl = "Sévérité" if CLIENT_LANG == "fr" else "Severity"
-            qv.columns = ["Table", issue_lbl, rows_lbl, sev_lbl]
-            sortable_table(qv, index=False, height=420, wrap=[issue_lbl], cell_style={
-                sev_lbl: lambda v: ("background:#fdecec;color:#b42318;font-weight:700;"
-                                    if str(v) == "critical" else
-                                    "background:#fef3e2;color:#a15c07;font-weight:600;"),
-                rows_lbl: lambda v: ("background:#e7f7ef;color:#0f7a4d;"
-                                     if float(v or 0) == 0 else
-                                     "background:#fef3e2;color:#a15c07;font-weight:700;"),
-            }, formats={rows_lbl: "{:,.0f}"})
-
-            issues = int(quality[quality["affected_rows"] > 0].shape[0])
-            crit = int(quality[(quality["severity"] == "critical") & (quality["affected_rows"] > 0)].shape[0])
-            if crit > 0:
-                alert_box("error", f"<b>{crit}</b> " +
-                          ("problème(s) critique(s) — corrigez avant de vous fier aux métriques."
-                           if CLIENT_LANG == "fr" else
-                           "critical issue(s) — fix before relying on the metrics."))
-            elif issues == 0:
-                alert_box("success", "<b>EXCELLENT</b> — " +
-                          ("aucun problème de qualité détecté." if CLIENT_LANG == "fr"
-                           else "no data quality issue detected."))
-            else:
-                alert_box("warning", f"<b>{issues}</b> " +
-                          ("point(s) d'attention mineur(s)." if CLIENT_LANG == "fr"
-                           else "minor point(s) of attention."))
-        else:
-            alert_box("info", T["no_data"])
-
-    with hr:
-        st.markdown(f"### {T['health_valuation']}")
-        val_gap = run_query("""
-            SELECT
-                ROUND(SUM(current_stock * unit_cost)::numeric, 0) AS ours,
-                ROUND(SUM(erp_stock_value)::numeric, 0) AS erp,
-                ROUND((100.0 * (SUM(current_stock * unit_cost) - SUM(erp_stock_value))
-                       / NULLIF(SUM(erp_stock_value), 0))::numeric, 3) AS gap_pct,
-                COUNT(*) FILTER (
-                    WHERE erp_stock_value > 0
-                      AND ABS(current_stock * unit_cost - erp_stock_value) / erp_stock_value > 0.05
-                ) AS refs_off
-            FROM inventory
-        """)
-        if not val_gap.empty:
-            v = val_gap.iloc[0]
-            gap = float(v["gap_pct"] or 0)
-            vc1, vc2 = st.columns(2)
-            with vc1:
-                lbl = "Notre valorisation" if CLIENT_LANG == "fr" else "Our valuation"
-                st.markdown(kpi_card(lbl, format_currency(v["ours"]), "kpi-info"), unsafe_allow_html=True)
-            with vc2:
-                lbl = "Valorisation ERP" if CLIENT_LANG == "fr" else "ERP valuation"
-                st.markdown(kpi_card(lbl, format_currency(v["erp"]), "kpi-info"), unsafe_allow_html=True)
-            st.write("")
-            if abs(gap) < 1:
-                alert_box("success", "✅ " + (f"Écart de valorisation : {gap:.3f}% — vos données de stock sont fiables."
-                                              if CLIENT_LANG == "fr" else
-                                              f"Valuation gap: {gap:.3f}% — your stock data is reliable."))
-            else:
-                alert_box("warning", "⚠️ " + (f"Écart de valorisation : {gap:.2f}% sur {int(v['refs_off'])} références."
-                                              if CLIENT_LANG == "fr" else
-                                              f"Valuation gap: {gap:.2f}% across {int(v['refs_off'])} references."))
-
-        st.markdown(f"### {T['health_params']}")
-        drift = run_query("""
-            SELECT
-                COUNT(*) FILTER (WHERE erp_lead_time_days IS NULL) AS lt_missing,
-                COUNT(*) FILTER (WHERE erp_safety_stock IS NULL) AS ss_missing,
-                COUNT(*) FILTER (WHERE erp_reorder_point IS NULL) AS rop_missing,
-                COUNT(*) FILTER (
-                    WHERE actual_lead_time_days IS NOT NULL AND erp_lead_time_days IS NOT NULL
-                      AND ABS(actual_lead_time_days - erp_lead_time_days) > 7
-                ) AS lt_drift,
+    with health_left:
+        st.markdown("### Vérification des valeurs manquantes")
+        missing = run_query("""
+            SELECT 'Orders — Product Name' AS field,
+                COUNT(*) FILTER (WHERE product_name IS NULL OR product_name = '') AS missing,
                 COUNT(*) AS total
-            FROM inventory
-        """)
-        if not drift.empty:
-            d = drift.iloc[0]
-            missing_lbl = "Paramètre absent de l'ERP" if CLIENT_LANG == "fr" else "Parameter missing in ERP"
-            dd = pd.DataFrame([
-                [T["col_lt"], int(d["lt_missing"]), int(d["total"])],
-                [T["col_ss_erp"], int(d["ss_missing"]), int(d["total"])],
-                [T["col_rop_erp"], int(d["rop_missing"]), int(d["total"])],
-            ], columns=[missing_lbl, "Manquant" if CLIENT_LANG == "fr" else "Missing",
-                        "Total"])
-            render_table(dd, height=200, formats={
-                ("Manquant" if CLIENT_LANG == "fr" else "Missing"): "{:,.0f}",
-                "Total": "{:,.0f}",
-            })
-            if int(d["lt_drift"]) > 0:
-                alert_box("warning", "⚠️ " +
-                          (f"{int(d['lt_drift'])} références ont un délai ERP décalé de plus de 7 jours "
-                           f"par rapport aux réceptions réelles. Vos commandes sont passées sur des hypothèses obsolètes."
-                           if CLIENT_LANG == "fr" else
-                           f"{int(d['lt_drift'])} references have an ERP lead time off by more than 7 days "
-                           f"versus actual receipts. Orders are placed on stale assumptions."))
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 7: INVOICES / AP AUTOMATION
-# ══════════════════════════════════════════════════════════════════════════════
-with tab7:
-    st.subheader(T["inv_title"])
-    st.caption(T["inv_caption"])
-
-    if not table_exists("invoices"):
-        alert_box("info",
-                  ("🎯 <b>Module non activé.</b> La table <code>invoices</code> n'existe pas encore sur "
-                   "cette base. Exécutez la migration du module comptes fournisseurs, puis configurez "
-                   "l'agent n8n de traitement des factures : toute facture reçue avec le libellé "
-                   "<code>supplystack-invoices</code> apparaîtra ici en moins d'une minute."
-                   if CLIENT_LANG == "fr" else
-                   "🎯 <b>Module not enabled.</b> The <code>invoices</code> table does not exist on this "
-                   "database yet. Run the AP module migration, then configure the n8n invoice agent: any "
-                   "invoice received with the <code>supplystack-invoices</code> label will show up here "
-                   "within a minute."))
-    else:
-        inv_kpi = run_query("""
-            SELECT
-                COUNT(*) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days') AS invoices_month,
-                COALESCE(SUM(total_amount) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days'), 0) AS ap_month,
-                COUNT(*) FILTER (WHERE discrepancy_flag = TRUE AND processed_at >= NOW() - INTERVAL '30 days') AS discrepancies,
-                CASE WHEN COUNT(*) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days') > 0
-                     THEN ROUND(100.0 * COUNT(*) FILTER (WHERE status='matched' AND processed_at >= NOW() - INTERVAL '30 days')
-                                 / COUNT(*) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days'), 1)
-                     ELSE 0 END AS match_pct,
-                COUNT(*) AS total_ever
-            FROM invoices
+            FROM orders
+            UNION ALL
+            SELECT 'Orders — Quantity',
+                COUNT(*) FILTER (WHERE quantity IS NULL OR quantity = 0), COUNT(*) FROM orders
+            UNION ALL
+            SELECT 'Orders — Amount',
+                COUNT(*) FILTER (WHERE total_amount IS NULL OR total_amount = 0), COUNT(*) FROM orders
+            UNION ALL
+            SELECT 'Orders — Date',
+                COUNT(*) FILTER (WHERE order_date IS NULL), COUNT(*) FROM orders
+            UNION ALL
+            SELECT 'Inventory — Unit Cost',
+                COUNT(*) FILTER (WHERE unit_cost IS NULL OR unit_cost <= 0), COUNT(*) FROM inventory
+            UNION ALL
+            SELECT 'Inventory — Stock',
+                COUNT(*) FILTER (WHERE current_stock IS NULL OR current_stock < 0), COUNT(*) FROM inventory
         """)
 
-        if inv_kpi.empty or int(inv_kpi.iloc[0]["total_ever"]) == 0:
-            alert_box("info",
-                      ("🎯 <b>Aucune facture pour l'instant.</b> Une fois l'agent n8n configuré et une "
-                       "facture envoyée à votre boîte avec le libellé <code>supplystack-invoices</code>, "
-                       "elle apparaîtra ici en moins d'une minute."
-                       if CLIENT_LANG == "fr" else
-                       "🎯 <b>No invoices yet.</b> Once the n8n agent is configured and an invoice lands "
-                       "in your inbox with the <code>supplystack-invoices</code> label, it will show up "
-                       "here within a minute."))
+        if not missing.empty:
+            missing.columns = ["Champ", "Manquant", "Total"]
+            sortable_table(missing, wrap=["Champ"], height=320,
+               formats={"Manquant": "{:,.0f}", "Total": "{:,.0f}"})
+
+    with health_right:
+        st.markdown("### Doublons & valeurs aberrantes")
+
+        dupes = run_query("""
+            SELECT product_name, COUNT(*) AS count
+            FROM inventory GROUP BY product_name HAVING COUNT(*) > 1
+            ORDER BY count DESC LIMIT 10
+        """)
+
+        if not dupes.empty:
+            st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 6px;">Duplicate SKUs</div>', unsafe_allow_html=True)
+            dupes.columns = ["Nom du produit", "Nombre"]
+            sortable_table(dupes, wrap=["Nom du produit"], height=380, formats={"Nombre": "{:,.0f}"})
         else:
-            r = inv_kpi.iloc[0]
-            k1, k2, k3, k4 = st.columns(4)
-            with k1:
-                lbl = "Factures (30j)" if CLIENT_LANG == "fr" else "Invoices (30d)"
-                st.markdown(kpi_card(lbl, format_number(r["invoices_month"]), "kpi-info"), unsafe_allow_html=True)
-            with k2:
-                lbl = "Total fournisseurs (30j)" if CLIENT_LANG == "fr" else "Supplier total (30d)"
-                st.markdown(kpi_card(lbl, format_currency(r["ap_month"]), "kpi-info"), unsafe_allow_html=True)
-            with k3:
-                lbl = "Écarts" if CLIENT_LANG == "fr" else "Discrepancies"
-                dc = "kpi-danger" if int(r["discrepancies"]) > 0 else "kpi-success"
-                st.markdown(kpi_card(lbl, format_number(r["discrepancies"]), dc), unsafe_allow_html=True)
-            with k4:
-                lbl = "Taux de rapprochement" if CLIENT_LANG == "fr" else "Match rate"
-                st.markdown(kpi_card(lbl, format_pct(r["match_pct"]), "kpi-success"), unsafe_allow_html=True)
+            alert_box("success", "✅ Aucun SKU en doublon détecté")
 
-            st.write("")
+        outliers = run_query("""
+            SELECT product_name, unit_cost
+            FROM inventory
+            WHERE unit_cost > (SELECT AVG(unit_cost) * 5 FROM inventory WHERE unit_cost > 0)
+            AND unit_cost > 0
+            ORDER BY unit_cost DESC LIMIT 10
+        """)
 
-            f1, f2, f3 = st.columns([2, 2, 3])
-            with f1:
-                status_all = "Tous" if CLIENT_LANG == "fr" else "All"
-                status_filter = st.selectbox(
-                    "Statut", [status_all, "received", "matched", "unmatched", "discrepancy", "paid", "disputed"],
-                    key="inv_status_filter", label_visibility="collapsed")
-            with f2:
-                days_filter = st.selectbox("Période", list(PRESETS.keys())[:4] + [ALL_LABEL],
-                                           key="inv_days_filter", label_visibility="collapsed")
-            with f3:
-                search = st.text_input("Search", key="inv_search",
-                                       placeholder="🔍  " + (T["col_supplier"] + " / n° facture…"
-                                                             if CLIENT_LANG == "fr" else
-                                                             T["col_supplier"] + " / invoice no…"),
-                                       label_visibility="collapsed")
+        if not outliers.empty:
+            st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:14px 0 6px;">Price Outliers (5x+ above average)</div>', unsafe_allow_html=True)
+            outliers.columns = ["Produit", "Coût unitaire"]
+            sortable_table(outliers, wrap=["Produit"], height=380,
+               formats={"Coût unitaire": "${:,.2f}"})
+        else:
+            alert_box("success", "✅ Aucune valeur aberrante de prix détectée")
 
-            days = PRESETS.get(days_filter) or 100000
-            where_clauses = ["processed_at >= NOW() - INTERVAL '%d days'" % days]
-            if status_filter != status_all:
-                if status_filter == "discrepancy":
-                    where_clauses.append("discrepancy_flag = TRUE")
-                else:
-                    where_clauses.append("status = '%s'" % status_filter)
-            if search:
-                s = search.replace("'", "''")
-                where_clauses.append("(vendor_name ILIKE '%%%s%%' OR invoice_number ILIKE '%%%s%%')" % (s, s))
-            where_sql = " AND ".join(where_clauses)
+    st.write("")
 
-            no_lbl = "N° facture" if CLIENT_LANG == "fr" else "Invoice no"
-            due_lbl = "Échéance" if CLIENT_LANG == "fr" else "Due"
-            amt_lbl = "Montant" if CLIENT_LANG == "fr" else "Amount"
-            st_lbl = "Statut" if CLIENT_LANG == "fr" else "Status"
-            fl_lbl = "Alerte" if CLIENT_LANG == "fr" else "Flag"
-            pr_lbl = "Traitée le" if CLIENT_LANG == "fr" else "Processed"
+    st.markdown("### Cohérence commandes vs stock")
+    cons_left, cons_right = st.columns(2, gap="medium")
 
-            invoices_df = run_query(f"""
-                SELECT
-                    invoice_number   AS "{no_lbl}",
-                    vendor_name      AS "{T['col_supplier']}",
-                    invoice_date     AS "Date",
-                    due_date         AS "{due_lbl}",
-                    total_amount     AS "{amt_lbl}",
-                    status           AS "{st_lbl}",
-                    CASE WHEN discrepancy_flag THEN '⚠' ELSE '—' END AS "{fl_lbl}",
-                    processed_at::date AS "{pr_lbl}"
+    with cons_left:
+        st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 8px;">Inventory SKUs with no orders</div>', unsafe_allow_html=True)
+        no_orders = run_query("""
+            SELECT i.product_name, i.current_stock, i.inventory_value
+            FROM inventory i
+            LEFT JOIN orders o ON i.product_name = o.product_name
+            WHERE o.product_name IS NULL
+            ORDER BY i.inventory_value DESC LIMIT 10
+        """)
+
+        if not no_orders.empty:
+            no_orders.columns = ["Produit", "Stock", "Valeur"]
+            sortable_table(no_orders, index=True, height=380, wrap=["Produit"],
+               formats={"Stock": "{:,.0f}", "Valeur": "${:,.0f}"})
+            alert_box("warning", f"⚠️ {len(no_orders)} SKUs ont du stock mais aucun historique de commande")
+        else:
+            alert_box("success", "✅ Tous les SKUs en stock ont des commandes correspondantes")
+
+    with cons_right:
+        st.markdown('<div style="font-size:13px;font-weight:700;color:#0f172a;margin:2px 0 8px;">Orders for products not in inventory</div>', unsafe_allow_html=True)
+        no_inv = run_query("""
+            SELECT o.product_name, COUNT(*) AS orders, SUM(o.total_amount) AS revenue
+            FROM orders o
+            LEFT JOIN inventory i ON o.product_name = i.product_name
+            WHERE i.product_name IS NULL
+            GROUP BY o.product_name
+            ORDER BY revenue DESC LIMIT 10
+        """)
+
+        if not no_inv.empty:
+            no_inv.columns = ["Produit", "Commandes", "Revenus"]
+            sortable_table(no_inv, index=True, height=380, wrap=["Produit"],
+               formats={"Commandes": "{:,.0f}", "Revenus": "${:,.0f}"})
+            alert_box("warning", f"⚠️ {len(no_inv)} produits ont des commandes mais aucun enregistrement de stock")
+        else:
+            alert_box("success", "✅ Tous les produits commandés existent dans le stock")
+
+    st.write("")
+
+    total_issues = run_query("""
+        SELECT
+            (SELECT COUNT(*) FILTER (WHERE product_name IS NULL OR product_name = '') FROM orders) +
+            (SELECT COUNT(*) FILTER (WHERE quantity IS NULL OR quantity = 0) FROM orders) +
+            (SELECT COUNT(*) FROM (SELECT product_name FROM inventory GROUP BY product_name HAVING COUNT(*) > 1) d) +
+            (SELECT COUNT(*) FROM inventory WHERE unit_cost <= 0 OR unit_cost IS NULL)
+        AS total_issues
+    """)
+
+    if not total_issues.empty:
+        issues = int(total_issues.iloc[0]["total_issues"])
+        if issues == 0:
+            alert_box("success", "<b>EXCELLENT</b> — aucun problème de qualité des données détecté.")
+        elif issues <= 5:
+            alert_box("warning", f"<b>BON</b> — {issues} problème(s) mineur(s) détecté(s). Vérifiez ci-dessus.")
+        else:
+            alert_box("error", f"<b>NÉCESSITE ATTENTION</b> — {issues} problèmes trouvés. Corrigez avant de vous fier aux métriques.")
+
+# TAB 8 — INVOICES / AP AUTOMATION
+# ═══════════════════════════════════════════════════════════════════════════
+# HOW TO ADD:
+#   1. Find where tabs are created (search for: st.tabs([)
+#      Currently: tab1, tab2, ..., tab7 = st.tabs([...])
+#      Add "💰 Factures" to the list; assign tab8 = st.tabs(...)[-1]
+#   2. Paste this entire block AFTER the "with tab7:" section, before any
+#      helper code that comes at the very end of the file.
+# 
+ 
+with tab8:
+    st.subheader("💰 Automatisation des comptes fournisseurs — Traitement des factures")
+    st.caption("Factures fournisseurs capturées automatiquement depuis la boîte mail. L'IA extrait les lignes et signale les écarts de prix par rapport à votre stock en quelques secondes.")
+ 
+    # ── Top KPI row ─────────────────────────────────────────────────
+    inv_kpi = run_query("""
+        SELECT
+            COUNT(*) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days') AS invoices_month,
+            COALESCE(SUM(total_amount) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days'), 0) AS ap_month,
+            COUNT(*) FILTER (WHERE discrepancy_flag = TRUE AND processed_at >= NOW() - INTERVAL '30 days') AS discrepancies,
+            CASE WHEN COUNT(*) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days') > 0
+                 THEN ROUND(100.0 * COUNT(*) FILTER (WHERE status='matched' AND processed_at >= NOW() - INTERVAL '30 days')
+                             / COUNT(*) FILTER (WHERE processed_at >= NOW() - INTERVAL '30 days'), 1)
+                 ELSE 0 END AS match_pct,
+            COUNT(*) FILTER (WHERE status='unmatched') AS unmatched_pending,
+            COUNT(*) AS total_ever
+        FROM invoices
+    """)
+ 
+    if inv_kpi.empty or int(inv_kpi.iloc[0]['total_ever']) == 0:
+        alert_box("info",
+            "🎯 <b>Aucune facture pour l'instant.</b> Une fois l'agent n8n de traitement des factures configuré "
+            "et une facture envoyée à votre Gmail avec le libellé <code>supplystack-invoices</code>, "
+            "elle apparaîtra ici en moins d'une minute.")
+    else:
+        r = inv_kpi.iloc[0]
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            st.markdown(f"""
+            <div style="background:#fff;border:1px solid #e6e8f0;border-radius:14px;padding:16px;">
+              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;">Factures (30J)</div>
+              <div style="font-size:26px;font-weight:700;color:#0f172a;margin-top:6px;">{int(r['invoices_month']):,}</div>
+            </div>""", unsafe_allow_html=True)
+        with k2:
+            st.markdown(f"""
+            <div style="background:#fff;border:1px solid #e6e8f0;border-radius:14px;padding:16px;">
+              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;">Total fournisseurs (30J)</div>
+              <div style="font-size:26px;font-weight:700;color:#0f172a;margin-top:6px;">${float(r['ap_month']):,.0f}</div>
+            </div>""", unsafe_allow_html=True)
+        with k3:
+            disc_color = "#ef4444" if int(r['discrepancies']) > 0 else "#22c55e"
+            st.markdown(f"""
+            <div style="background:#fff;border:1px solid #e6e8f0;border-radius:14px;padding:16px;">
+              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;">Écarts</div>
+              <div style="font-size:26px;font-weight:700;color:{disc_color};margin-top:6px;">{int(r['discrepancies'])}</div>
+            </div>""", unsafe_allow_html=True)
+        with k4:
+            st.markdown(f"""
+            <div style="background:#fff;border:1px solid #e6e8f0;border-radius:14px;padding:16px;">
+              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;">Taux de corresp.</div>
+              <div style="font-size:26px;font-weight:700;color:#0f172a;margin-top:6px;">{float(r['match_pct']):.1f}%</div>
+            </div>""", unsafe_allow_html=True)
+ 
+        st.markdown("")
+ 
+        # ── Filters ─────────────────────────────────────────────────
+        f1, f2, f3 = st.columns([2, 2, 3])
+        with f1:
+            status_filter = st.selectbox(
+                "Statut",
+                ["Tous", "received", "matched", "unmatched", "discrepancy", "paid", "disputed"],
+                key="inv_status_filter",
+            )
+        with f2:
+            days_filter = st.selectbox(
+                "Période",
+                ["30 derniers jours", "90 derniers jours", "12 derniers mois", "Tout l'historique"],
+                key="inv_days_filter",
+            )
+        with f3:
+            search = st.text_input(
+                "Rechercher un fournisseur ou n° de facture",
+                key="inv_search",
+                placeholder="ex. Acme Corp, INV-2026-0417",
+            )
+ 
+        days_map = {"30 derniers jours": 30, "90 derniers jours": 90, "12 derniers mois": 365, "Tout l'historique": 100000}
+        days = days_map[days_filter]
+ 
+        where_clauses = ["processed_at >= NOW() - INTERVAL '%d days'" % days]
+        if status_filter != "Tous":
+            if status_filter == "discrepancy":
+                where_clauses.append("discrepancy_flag = TRUE")
+            else:
+                where_clauses.append("status = '%s'" % status_filter)
+        if search:
+            s = search.replace("'", "''")
+            where_clauses.append(
+                "(vendor_name ILIKE '%%%s%%' OR invoice_number ILIKE '%%%s%%')" % (s, s)
+            )
+        where_sql = " AND ".join(where_clauses)
+ 
+        # ── Invoice table ───────────────────────────────────────────
+        invoices_df = run_query(f"""
+            SELECT
+                invoice_number   AS "N° facture",
+                vendor_name      AS "Fournisseur",
+                invoice_date     AS "Date",
+                due_date         AS "Échéance",
+                total_amount     AS "Montant",
+                currency         AS "Dev.",
+                status           AS "Statut",
+                CASE WHEN discrepancy_flag THEN '⚠ Yes' ELSE '—' END AS "Alerte",
+                processed_at::date AS "Traitée le"
+            FROM invoices
+            WHERE {where_sql}
+            ORDER BY processed_at DESC
+            LIMIT 200
+        """)
+ 
+        if invoices_df.empty:
+            alert_box("info", "Aucune facture ne correspond aux filtres actuels.")
+        else:
+            st.markdown(
+    f'<div style="font-size:14px;font-weight:600;color:#0f172a;margin:8px 0 12px;">'
+    f'Affichage de {len(invoices_df)} facture(s)</div>',
+    unsafe_allow_html=True,
+)
+            st.markdown('<div style="margin-bottom:-30px"></div>', unsafe_allow_html=True)
+        st.markdown('<div style="margin-top:-30px"></div>', unsafe_allow_html=True)
+        sortable_table(invoices_df, index=True,
+                       height=min(440, 68 + len(invoices_df) * 40),
+                       wrap=["Fournisseur", "N° facture"], formats={
+            "Montant": "${:,.2f}",
+            "Échéance": lambda v: "—" if v is None else str(v),
+        }, cell_style={
+            "Statut": lambda v: (
+                "background:#dcfce7;color:#166534;" if v == "matched" else
+                "background:#fef3c7;color:#92400e;" if v == "received" else
+                "background:#fee2e2;color:#991b1b;" if v == "unmatched" else
+                "background:#fef3c7;color:#92400e;" if v == "discrepancy" else ""
+            ),
+            "Alerte": lambda v: "color:#ef4444;font-weight:600;" if "Yes" in str(v) else "color:#94a3b8;",
+        })
+ # ── Mark invoices as paid ────────────────────────────────────
+        with st.expander("💳 Mettre à jour le statut d'une facture"):
+            st.caption("Sélectionnez une ou plusieurs factures, choisissez un nouveau statut, appliquez.")
+            
+            # Get unmatched/received invoices for selection
+            pending = run_query("""
+                SELECT invoice_number, vendor_name, total_amount, currency, status
                 FROM invoices
-                WHERE {where_sql}
+                WHERE status IN ('received', 'matched', 'unmatched', 'discrepancy')
                 ORDER BY processed_at DESC
-                LIMIT 200
+                LIMIT 100
             """)
-
-            if invoices_df.empty:
-                alert_box("info", T["no_data"])
+            
+            if pending.empty:
+                st.info("Aucune facture en attente à mettre à jour.")
             else:
-                st.markdown(
-                    f'<div style="font-size:12px;color:#94a3b8;margin:2px 0 8px;">'
-                    f'{T["showing"]} {len(invoices_df)} · {T["sort_hint"]}</div>',
-                    unsafe_allow_html=True)
-                sortable_table(invoices_df, index=True,
-                               height=min(440, 100 + len(invoices_df) * 40),
-                               wrap=[T["col_supplier"], no_lbl], formats={
-                    amt_lbl: lambda v: format_currency(v),
-                    due_lbl: lambda v: "—" if v is None else str(v),
-                }, cell_style={
-                    st_lbl: lambda v: (
-                        "background:#e7f7ef;color:#0f7a4d;font-weight:600;" if v == "matched" else
-                        "background:#fef3e2;color:#a15c07;font-weight:600;" if v == "received" else
-                        "background:#fdecec;color:#b42318;font-weight:600;" if v == "unmatched" else
-                        "background:#fef3e2;color:#a15c07;font-weight:600;" if v == "discrepancy" else
-                        "background:#eaf1fe;color:#1d4ed8;font-weight:600;" if v == "paid" else ""
-                    ),
-                    fl_lbl: lambda v: "color:#e5484d;font-weight:700;" if "⚠" in str(v) else "color:#94a3b8;",
-                })
-
-            # ── Line-item discrepancies vs purchase orders ──────────────
-            st.write("")
-            hdr = ("Écarts sur les lignes de facture" if CLIENT_LANG == "fr"
-                   else "Invoice line discrepancies")
-            sub = ("Lignes dont le prix facturé s'écarte de plus de 5 % du prix de la commande fournisseur."
-                   if CLIENT_LANG == "fr" else
-                   "Lines where the invoiced price differs by more than 5% from the purchase order price.")
-            st.markdown(f"### {hdr}")
-            st.caption(sub)
-
-            if table_exists("invoice_line_items"):
-                desc_lbl = "Description" if CLIENT_LANG == "fr" else "Description"
-                matched_lbl = "Article rapproché" if CLIENT_LANG == "fr" else "Matched article"
-                billed_lbl = "Facturé" if CLIENT_LANG == "fr" else "Billed"
-                exp_lbl = "Attendu" if CLIENT_LANG == "fr" else "Expected"
-                var_lbl = "Écart %" if CLIENT_LANG == "fr" else "Variance %"
-                qty_lbl = "Qté" if CLIENT_LANG == "fr" else "Qty"
-
-                disc_lines = run_query(f"""
-                    SELECT
-                        i.invoice_number || ' — ' || i.vendor_name AS "{no_lbl}",
-                        li.description          AS "{desc_lbl}",
-                        li.matched_product_name AS "{matched_lbl}",
-                        li.quantity             AS "{qty_lbl}",
-                        li.unit_price           AS "{billed_lbl}",
-                        li.expected_unit_cost   AS "{exp_lbl}",
-                        li.price_variance_pct   AS "{var_lbl}"
-                    FROM invoice_line_items li
-                    JOIN invoices i ON i.id = li.invoice_id
-                    WHERE ABS(COALESCE(li.price_variance_pct, 0)) > 5
-                      AND i.processed_at >= NOW() - INTERVAL '90 days'
-                    ORDER BY ABS(li.price_variance_pct) DESC
-                    LIMIT 20
-                """)
-                if disc_lines.empty:
-                    alert_box("success", "✅ " +
-                              ("Aucun écart de prix sur les 90 derniers jours."
-                               if CLIENT_LANG == "fr" else
-                               "No price discrepancy in the last 90 days."))
-                else:
-                    sortable_table(disc_lines, index=True,
-                                   height=min(400, 110 + len(disc_lines) * 44),
-                                   wrap=[no_lbl, desc_lbl, matched_lbl],
-                                   cell_style={var_lbl: _bg_variance}, formats={
-                        qty_lbl: "{:,.0f}",
-                        billed_lbl: lambda v: f"{float(v):,.4f} {CURRENCY}",
-                        exp_lbl: lambda v: f"{float(v):,.4f} {CURRENCY}",
-                        var_lbl: "{:+.1f}%",
-                    })
-            else:
-                alert_box("info",
-                          ("Table <code>invoice_line_items</code> absente — le détail ligne à ligne "
-                           "sera disponible une fois le module complet installé."
-                           if CLIENT_LANG == "fr" else
-                           "Table <code>invoice_line_items</code> is missing — line-level detail will be "
-                           "available once the full module is installed."))
-
-
+                labels = [
+                    f"{r['invoice_number']} — {r['vendor_name']} ({r['currency']} {float(r['total_amount']):,.2f}) [{r['status']}]"
+                    for _, r in pending.iterrows()
+                ]
+                selected = st.multiselect("Sélectionner facture(s)", labels, key="inv_status_multi")
+                
+                col_a, col_b = st.columns([2, 1])
+                with col_a:
+                    new_status = st.selectbox(
+                        "Changer le statut à",
+                        ["paid", "disputed", "received", "matched"],
+                        key="inv_new_status",
+                    )
+                with col_b:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    apply = st.button("Appliquer", type="primary", use_container_width=True)
+                
+                if apply and selected:
+                    inv_numbers = [s.split(" — ")[0] for s in selected]
+                    inv_list = ",".join(f"'{i}'" for i in inv_numbers)
+                    
+                    try:
+                        import psycopg2
+                        conn = get_connection()
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                f"UPDATE invoices SET status = '{new_status}' "
+                                f"WHERE invoice_number IN ({inv_list})"
+                            )
+                            updated_count = cur.rowcount
+                        conn.commit()
+                        st.success(f"✅ {updated_count} facture(s) mise(s) à jour → '{new_status}'")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Échec : {e}")
+                elif apply and not selected:
+                    st.warning("Sélectionnez au moins une facture.")
+        # ── Recent discrepancies drill-down ─────────────────────────
+        st.markdown("### Écarts récents sur les lignes de facture")
+        st.caption("Lignes dont le prix facturé diffère de plus de 5% du coût unitaire attendu dans le stock.")
+ 
+        disc_lines = run_query("""
+            SELECT
+                i.invoice_number || ' — ' || i.vendor_name AS "Facture",
+                li.description          AS "Description",
+                li.matched_product_name  AS "SKU rapproché",
+                li.quantity             AS "Qté",
+                li.unit_price           AS "Facturé",
+                li.expected_unit_cost   AS "Attendu",
+                li.price_variance_pct   AS "Écart %"
+            FROM invoice_line_items li
+            JOIN invoices i ON i.id = li.invoice_id
+            WHERE ABS(COALESCE(li.price_variance_pct, 0)) > 5
+              AND i.processed_at >= NOW() - INTERVAL '90 days'
+            ORDER BY ABS(li.price_variance_pct) DESC
+            LIMIT 20
+        """)
+ 
+        if disc_lines.empty:
+            alert_box("success", "✅ Aucun écart de prix sur les 90 derniers jours.")
+        else:
+            sortable_table(disc_lines, index=True,
+               height=min(380, 90 + len(disc_lines) * 44),
+               wrap=["Facture", "Description", "SKU rapproché"], formats={
+                "Qté": "{:,.0f}", "Facturé": "${:,.4f}",
+                "Attendu": "${:,.4f}", "Écart %": "{:+.1f}%",
+            })
+ 
 # ── FOOTER ────────────────────────────────────────────────────────────────────
+
 st.markdown("---")
 st.markdown(
     '<p style="text-align: center; color: #94a3b8; font-size: 12px;">'
-    f'Industrial Supply Chain Intelligence · {CLIENT_NAME} · Powered by SupplyStack · '
-    f'{datetime.now().strftime("%d/%m/%Y %H:%M")}'
+    'Supply Chain Intelligence Engine • Powered by SupplyStack • '
+    f'Last refresh: {datetime.now().strftime("%Y-%m-%d %H:%M")}'
     '</p>',
     unsafe_allow_html=True,
 )
