@@ -214,7 +214,7 @@ T_ALL = {
         "act_stop": "Stopper réappro",
         "act_reorder": "Commander",
         "act_hold": "Conserver",
-        "date_note": "Le sélecteur de période s'applique à l'onglet Fournisseurs. Les stocks et leurs indicateurs sont un instantané recalculé chaque nuit sur 12 mois glissants. Période fournisseurs retenue :",
+        "date_note": "Commandes fournisseurs réceptionnées entre",
     },
     "en": {
         "header_sub": "Dashboard — Industrial inventory and procurement",
@@ -319,7 +319,7 @@ T_ALL = {
         "act_stop": "Stop reordering",
         "act_reorder": "Reorder",
         "act_hold": "Hold",
-        "date_note": "The period selector applies to the Suppliers tab. Stock levels and their indicators are a snapshot recomputed nightly over a rolling 12 months. Supplier period in scope:",
+        "date_note": "Purchase orders received between",
     },
 }
 T = T_ALL[CLIENT_LANG]
@@ -1241,7 +1241,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── GLOBAL DATE RANGE (scoped to the Suppliers tab) ──────────────────────────
+# ── DATE RANGE BOUNDS (the selector itself lives in the Suppliers tab) ───────
 _bounds = run_query("SELECT MIN(order_date)::date AS mn, MAX(order_date)::date AS mx FROM purchase_orders")
 if not _bounds.empty and _bounds.iloc[0]["mx"] is not None:
     DATA_MIN = pd.to_datetime(_bounds.iloc[0]["mn"]).date()
@@ -1252,53 +1252,18 @@ else:
 
 if CLIENT_LANG == "fr":
     PRESETS = {
-        "30 derniers jours": 30, "90 derniers jours": 90, "6 derniers mois": 182,
-        "12 derniers mois": 365, "Tout l'historique": None, "Période personnalisée…": "custom",
+        "Tout l'historique": None, "12 derniers mois": 365, "6 derniers mois": 182,
+        "90 derniers jours": 90, "Période personnalisée…": "custom",
     }
     ALL_LABEL = "Tout l'historique"
     CUSTOM_LABEL = "Période personnalisée…"
 else:
     PRESETS = {
-        "Last 30 days": 30, "Last 90 days": 90, "Last 6 months": 182,
-        "Last 12 months": 365, "All history": None, "Custom range…": "custom",
+        "All history": None, "Last 12 months": 365, "Last 6 months": 182,
+        "Last 90 days": 90, "Custom range…": "custom",
     }
     ALL_LABEL = "All history"
     CUSTOM_LABEL = "Custom range…"
-
-_sp, _tc = st.columns([3, 1])
-with _tc:
-    _choice = st.selectbox("Date range", list(PRESETS.keys()),
-                           index=list(PRESETS).index(ALL_LABEL), label_visibility="collapsed")
-    if _choice == CUSTOM_LABEL:
-        _r = st.date_input("Custom range", value=(DATA_MIN, DATA_MAX),
-                           min_value=DATA_MIN, max_value=DATA_MAX, label_visibility="collapsed")
-        if isinstance(_r, (list, tuple)) and len(_r) == 2:
-            START_DATE, END_DATE = _r
-        else:
-            START_DATE, END_DATE = DATA_MIN, DATA_MAX
-    elif _choice == ALL_LABEL:
-        START_DATE, END_DATE = DATA_MIN, DATA_MAX
-    else:
-        END_DATE = DATA_MAX
-        START_DATE = max(DATA_MIN, DATA_MAX - timedelta(days=PRESETS[_choice]))
-
-if _choice == ALL_LABEL:
-    MVT_WHERE = ""
-    PO_WHERE = ""
-    PO_AND = ""
-else:
-    MVT_WHERE = ("WHERE movement_date >= '%s' AND movement_date < '%s'"
-                 % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
-    PO_WHERE = ("WHERE order_date >= '%s' AND order_date < '%s'"
-                % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
-    PO_AND = ("  AND order_date >= '%s' AND order_date < '%s'"
-              % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
-
-st.markdown(
-    f'<div style="margin:2px 0 8px;font-size:12.5px;font-weight:500;color:#64748b;">'
-    f'📅&nbsp; {T["date_note"]} <b style="color:#334155;">{START_DATE:%d/%m/%Y} → {END_DATE:%d/%m/%Y}</b>.</div>',
-    unsafe_allow_html=True,
-)
 
 # ── TABS ──────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
@@ -1826,6 +1791,43 @@ with tab2:
 # TAB 3: SUPPLIERS
 # ══════════════════════════════════════════════════════════════════════════════
 with tab3:
+    # ── Period selector — scoped to this tab, where it actually changes the data ──
+    _hdr_l, _hdr_r = st.columns([3, 1])
+    with _hdr_l:
+        _lbl = ("Période d'analyse" if CLIENT_LANG == "fr" else "Analysis period")
+        st.markdown(
+            f'<div style="font-size:13px;font-weight:700;color:#0f172a;padding-top:6px;">{_lbl}</div>',
+            unsafe_allow_html=True)
+    with _hdr_r:
+        _choice = st.selectbox("Period", list(PRESETS.keys()),
+                               index=list(PRESETS).index(ALL_LABEL),
+                               key="sup_period", label_visibility="collapsed")
+
+    if _choice == CUSTOM_LABEL:
+        _r = st.date_input("Custom range", value=(DATA_MIN, DATA_MAX),
+                           min_value=DATA_MIN, max_value=DATA_MAX,
+                           key="sup_custom", label_visibility="collapsed")
+        if isinstance(_r, (list, tuple)) and len(_r) == 2:
+            START_DATE, END_DATE = _r
+        else:
+            START_DATE, END_DATE = DATA_MIN, DATA_MAX
+    elif _choice == ALL_LABEL:
+        START_DATE, END_DATE = DATA_MIN, DATA_MAX
+    else:
+        END_DATE = DATA_MAX
+        START_DATE = max(DATA_MIN, DATA_MAX - timedelta(days=PRESETS[_choice]))
+
+    if _choice == ALL_LABEL:
+        PO_AND = ""
+    else:
+        PO_AND = ("  AND order_date >= '%s' AND order_date < '%s'"
+                  % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
+
+    st.markdown(
+        f'<div style="font-size:12px;color:#94a3b8;margin:2px 0 14px;">'
+        f'📅&nbsp; {T["date_note"]} <b style="color:#475569;">{START_DATE:%d/%m/%Y} → {END_DATE:%d/%m/%Y}</b></div>',
+        unsafe_allow_html=True)
+
     sup_kpis = run_query(f"""
         SELECT
             COALESCE(ROUND(100.0 * SUM(CASE WHEN received_date <= promised_date THEN 1 ELSE 0 END)
@@ -1917,11 +1919,9 @@ with tab3:
             lbl = "Lignes réceptionnées" if CLIENT_LANG == "fr" else "Received lines"
             st.markdown(kpi_card(lbl, format_number(r["n_lines"]), "kpi-info"), unsafe_allow_html=True)
 
-    scope_note = (f"Période analysée : <b style=\"color:#334155;\">{START_DATE:%d/%m/%Y} → {END_DATE:%d/%m/%Y}</b>. "
-                  f"Seuls les fournisseurs avec au moins 5 réceptions sur la période sont notés."
+    scope_note = ("Seuls les fournisseurs avec au moins 5 réceptions sur la période sélectionnée sont notés."
                   if CLIENT_LANG == "fr" else
-                  f"Period analysed: <b style=\"color:#334155;\">{START_DATE:%d/%m/%Y} → {END_DATE:%d/%m/%Y}</b>. "
-                  f"Only suppliers with at least 5 receipts in the period are scored.")
+                  "Only suppliers with at least 5 receipts in the selected period are scored.")
     st.markdown(f'<div style="font-size:12px;color:#94a3b8;margin:10px 0 0;">{scope_note}</div>',
                 unsafe_allow_html=True)
 
