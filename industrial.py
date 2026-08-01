@@ -214,7 +214,7 @@ T_ALL = {
         "act_stop": "Stopper réappro",
         "act_reorder": "Commander",
         "act_hold": "Conserver",
-        "date_note": "Les niveaux de stock sont un instantané en direct. Les mouvements et commandes couvrent",
+        "date_note": "Le sélecteur de période s'applique à l'onglet Fournisseurs. Les stocks et leurs indicateurs sont un instantané recalculé chaque nuit sur 12 mois glissants. Période fournisseurs retenue :",
     },
     "en": {
         "header_sub": "Dashboard — Industrial inventory and procurement",
@@ -319,7 +319,7 @@ T_ALL = {
         "act_stop": "Stop reordering",
         "act_reorder": "Reorder",
         "act_hold": "Hold",
-        "date_note": "Stock levels are a live snapshot. Movements and orders cover",
+        "date_note": "The period selector applies to the Suppliers tab. Stock levels and their indicators are a snapshot recomputed nightly over a rolling 12 months. Supplier period in scope:",
     },
 }
 T = T_ALL[CLIENT_LANG]
@@ -1241,8 +1241,8 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── GLOBAL DATE RANGE (movements + purchase orders) ──────────────────────────
-_bounds = run_query("SELECT MIN(movement_date)::date AS mn, MAX(movement_date)::date AS mx FROM stock_movements")
+# ── GLOBAL DATE RANGE (scoped to the Suppliers tab) ──────────────────────────
+_bounds = run_query("SELECT MIN(order_date)::date AS mn, MAX(order_date)::date AS mx FROM purchase_orders")
 if not _bounds.empty and _bounds.iloc[0]["mx"] is not None:
     DATA_MIN = pd.to_datetime(_bounds.iloc[0]["mn"]).date()
     DATA_MAX = pd.to_datetime(_bounds.iloc[0]["mx"]).date()
@@ -1285,11 +1285,14 @@ with _tc:
 if _choice == ALL_LABEL:
     MVT_WHERE = ""
     PO_WHERE = ""
+    PO_AND = ""
 else:
     MVT_WHERE = ("WHERE movement_date >= '%s' AND movement_date < '%s'"
                  % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
     PO_WHERE = ("WHERE order_date >= '%s' AND order_date < '%s'"
                 % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
+    PO_AND = ("  AND order_date >= '%s' AND order_date < '%s'"
+              % (START_DATE.isoformat(), (END_DATE + timedelta(days=1)).isoformat()))
 
 st.markdown(
     f'<div style="margin:2px 0 8px;font-size:12.5px;font-weight:500;color:#64748b;">'
@@ -1833,7 +1836,68 @@ with tab3:
             COUNT(*) AS n_lines
         FROM purchase_orders
         WHERE received_date IS NOT NULL AND order_date IS NOT NULL
+{PO_AND}
     """)
+
+    # Scorecard recomputed live so it responds to the period selector.
+    # Same logic as v_supplier_scorecard_robust, with the date filter applied.
+    scorecard = run_query(f"""
+        WITH base AS (
+            SELECT
+                supplier_name,
+                COUNT(*) AS commandes_total,
+                AVG(received_date - order_date)    AS lt_moyen_raw,
+                STDDEV(received_date - order_date) AS lt_stddev_raw,
+                COUNT(promised_date)               AS n_promised,
+                SUM(CASE WHEN received_date <= promised_date THEN 1 ELSE 0 END) AS n_ontime,
+                SUM(CASE WHEN quantity_received < quantity_ordered THEN 1 ELSE 0 END) AS n_partial
+            FROM purchase_orders
+            WHERE received_date IS NOT NULL AND order_date IS NOT NULL
+{PO_AND}
+            GROUP BY supplier_name
+            HAVING COUNT(*) >= 5
+        ),
+        calc AS (
+            SELECT
+                supplier_name,
+                commandes_total,
+                ROUND(lt_moyen_raw::numeric, 1)    AS lt_moyen,
+                ROUND(COALESCE(lt_stddev_raw, 0)::numeric, 1) AS lt_stddev,
+                ROUND((COALESCE(lt_stddev_raw, 0) / NULLIF(lt_moyen_raw, 0))::numeric, 2) AS cv_lead_time,
+                ROUND((100.0 * n_promised / NULLIF(commandes_total, 0))::numeric, 1) AS pct_avec_promised,
+                ROUND((100.0 * n_ontime / NULLIF(n_promised, 0))::numeric, 1) AS otd_when_measurable,
+                ROUND((100.0 * n_partial / NULLIF(commandes_total, 0))::numeric, 1) AS pct_livraison_partielle,
+                COALESCE(lt_stddev_raw / NULLIF(lt_moyen_raw, 0), 0) AS cv_raw,
+                COALESCE(100.0 * n_ontime / NULLIF(n_promised, 0), 50) AS otd_raw,
+                n_promised
+            FROM base
+        )
+        SELECT
+            supplier_name,
+            commandes_total,
+            lt_moyen,
+            lt_stddev,
+            cv_lead_time,
+            pct_avec_promised,
+            otd_when_measurable,
+            pct_livraison_partielle,
+            ROUND((
+                LEAST(100, GREATEST(0, cv_raw * 100)) * 0.5
+              + LEAST(100, GREATEST(0, 100 - otd_raw)) * 0.3
+              + LEAST(100, COALESCE(pct_livraison_partielle, 0)) * 0.2
+            )::numeric, 1) AS risk_score,
+            CASE
+                WHEN n_promised = 0 THEN 'no_promised_data'
+                WHEN cv_raw > 0.35 OR otd_raw < 40 THEN 'critical'
+                WHEN cv_raw > 0.25 THEN 'unstable'
+                WHEN otd_raw < 55 THEN 'weak'
+                WHEN otd_raw < 75 THEN 'acceptable'
+                ELSE 'solid'
+            END AS supplier_category
+        FROM calc
+        ORDER BY risk_score DESC
+    """)
+
     if not sup_kpis.empty:
         r = sup_kpis.iloc[0]
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -1853,20 +1917,29 @@ with tab3:
             lbl = "Lignes réceptionnées" if CLIENT_LANG == "fr" else "Received lines"
             st.markdown(kpi_card(lbl, format_number(r["n_lines"]), "kpi-info"), unsafe_allow_html=True)
 
+    scope_note = (f"Période analysée : <b style=\"color:#334155;\">{START_DATE:%d/%m/%Y} → {END_DATE:%d/%m/%Y}</b>. "
+                  f"Seuls les fournisseurs avec au moins 5 réceptions sur la période sont notés."
+                  if CLIENT_LANG == "fr" else
+                  f"Period analysed: <b style=\"color:#334155;\">{START_DATE:%d/%m/%Y} → {END_DATE:%d/%m/%Y}</b>. "
+                  f"Only suppliers with at least 5 receipts in the period are scored.")
+    st.markdown(f'<div style="font-size:12px;color:#94a3b8;margin:10px 0 0;">{scope_note}</div>',
+                unsafe_allow_html=True)
+
     st.write("")
 
     seg_l, seg_r = st.columns([3, 2], gap="medium")
 
     with seg_l:
         st.subheader(T["supplier_seg"])
-        dist = run_query("""
-            SELECT supplier_category, COUNT(*) AS n,
-                   SUM(commandes_total) AS cmds,
-                   ROUND(AVG(otd_when_measurable)::numeric, 1) AS otd,
-                   ROUND(AVG(cv_lead_time)::numeric, 2) AS cv
-            FROM v_supplier_scorecard_robust
-            GROUP BY supplier_category
-        """)
+        if not scorecard.empty:
+            dist = (scorecard.groupby("supplier_category")
+                    .agg(n=("supplier_name", "count"),
+                         cmds=("commandes_total", "sum"),
+                         otd=("otd_when_measurable", "mean"),
+                         cv=("cv_lead_time", "mean"))
+                    .reset_index())
+        else:
+            dist = pd.DataFrame()
         if not dist.empty:
             order = ["critical", "unstable", "weak", "acceptable", "solid", "no_promised_data"]
             dist["ord"] = dist["supplier_category"].map(lambda x: order.index(x) if x in order else 99)
@@ -1916,13 +1989,7 @@ with tab3:
     st.write("")
     st.subheader(T["supplier_detail"])
 
-    sup_all = run_query("""
-        SELECT supplier_name, supplier_category, commandes_total,
-               lt_moyen, lt_stddev, cv_lead_time, otd_when_measurable,
-               pct_livraison_partielle, risk_score
-        FROM v_supplier_scorecard_robust
-        ORDER BY risk_score DESC
-    """)
+    sup_all = scorecard.copy() if not scorecard.empty else pd.DataFrame()
     if not sup_all.empty:
         f1, f2 = st.columns([1, 3])
         with f1:
