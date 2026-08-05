@@ -18,6 +18,8 @@ import plotly.graph_objects as go
 import pandas as pd
 import psycopg2
 import re
+import os
+import hmac
 import json
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, date, timedelta
@@ -30,6 +32,98 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ACCESS CONTROL
+# ───────────────────────────────────────────────────────────────────────────
+# Portable across hosts: reads the password from Streamlit secrets when
+# available, otherwise from an environment variable. Migrating to Render or a
+# VPS therefore requires no code change — only where the secret is stored.
+#
+#   Streamlit Cloud : Manage app → Settings → Secrets
+#                     dashboard_password = "..."
+#   Render / VPS    : environment variable DASHBOARD_PASSWORD
+#
+# Leave both unset to disable the gate (local development).
+#
+# This must run BEFORE DB_CONFIG so the Postgres secret is never read until
+# access is granted.
+# ═══════════════════════════════════════════════════════════════════════════
+CLIENT_LANG = "en"                      # "fr" or "en"
+CLIENT_NAME = "SupplyStack"
+
+
+def _expected_password():
+    try:
+        pwd = st.secrets.get("dashboard_password", "")
+    except Exception:
+        pwd = ""
+    return pwd or os.environ.get("DASHBOARD_PASSWORD", "")
+
+
+def require_access():
+    """Block the whole app behind a password. No-op if none is configured."""
+    expected = _expected_password()
+    if not expected:
+        return  # gate disabled
+
+    if st.session_state.get("_authenticated"):
+        return
+
+    if CLIENT_LANG == "fr":
+        title = "Accès au tableau de bord"
+        sub = f"Espace client {CLIENT_NAME}"
+        field = "Mot de passe"
+        button = "Se connecter"
+        wrong = "Mot de passe incorrect."
+        footer = "Accès fourni par SupplyStack Consulting. En cas de perte, contactez votre référent."
+    else:
+        title = "Dashboard access"
+        sub = f"{CLIENT_NAME} client area"
+        field = "Password"
+        button = "Sign in"
+        wrong = "Incorrect password."
+        footer = "Access provided by SupplyStack Consulting. Lost it? Contact your account manager."
+
+    st.markdown(f"""
+    <div style="max-width:420px;margin:12vh auto 0;text-align:center;">
+      <div style="width:52px;height:52px;border-radius:15px;margin:0 auto 18px;
+           background:linear-gradient(135deg,#6355ff,#9d8bff);color:#fff;
+           display:flex;align-items:center;justify-content:center;
+           font-size:24px;font-weight:800;
+           box-shadow:0 10px 22px -10px rgba(99,85,255,0.7);">S</div>
+      <div style="font-size:9.5px;font-weight:600;letter-spacing:0.18em;color:#a5aec4;">SUPPLYSTACK</div>
+      <div style="font-size:20px;font-weight:800;color:#0f172a;margin-top:6px;">{title}</div>
+      <div style="font-size:13px;color:#64748b;margin-top:4px;">{sub}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    _l, _c, _r = st.columns([1, 2, 1])
+    with _c:
+        with st.form("access_form", clear_on_submit=False):
+            entered = st.text_input(field, type="password", label_visibility="collapsed",
+                                    placeholder=field)
+            ok = st.form_submit_button(button, use_container_width=True)
+        if ok:
+            if hmac.compare_digest(entered or "", expected):
+                st.session_state["_authenticated"] = True
+                st.rerun()
+            else:
+                st.markdown(
+                    f'<div style="background:#fdecec;border-left:4px solid #e5484d;color:#b42318;'
+                    f'padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;'
+                    f'margin-top:10px;">{wrong}</div>',
+                    unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="font-size:11.5px;color:#94a3b8;text-align:center;'
+            f'margin-top:22px;line-height:1.5;">{footer}</div>',
+            unsafe_allow_html=True)
+
+    st.stop()
+
+
+require_access()
+
 
 # ── CREDENTIALS ───────────────────────────────────────────────────────────────
 # Replace these two values with your own
@@ -1014,14 +1108,56 @@ TAB_KEYS = [
 ]
 tab_labels = [label for _, label in TAB_KEYS]
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(tab_labels)
+# ── NAVIGATION ────────────────────────────────────────────────────────────────
+# A radio backed by session_state rather than st.tabs. Two reasons:
+#   1. st.tabs resets to the first tab on every rerun, so any button click
+#      (AI suggestions, form submit, filters) bounced the user back to the
+#      executive view.
+#   2. st.tabs renders every tab body on every run — all eight sets of queries
+#      fired to display one screen. Here only the selected page executes.
+PAGES = tab_labels
+
+if "nav_page" not in st.session_state or st.session_state.nav_page not in PAGES:
+    st.session_state.nav_page = PAGES[0]
+
+st.markdown("""
+<style>
+    /* Radio navigation styled as the Aurora tab bar */
+    div[data-testid="stRadio"] > label { display: none; }
+    div[data-testid="stRadio"] > div {
+        flex-direction: row; gap: 26px; flex-wrap: wrap;
+        border-bottom: 1px solid rgba(15,23,42,0.08);
+        padding: 0 0 0 2px; margin-bottom: 18px;
+    }
+    div[data-testid="stRadio"] label[data-baseweb="radio"] {
+        padding: 11px 0 12px; margin: 0; cursor: pointer;
+        border-bottom: 2.5px solid transparent; gap: 0;
+    }
+    div[data-testid="stRadio"] label[data-baseweb="radio"] > div:first-child { display: none; }
+    div[data-testid="stRadio"] label[data-baseweb="radio"] div[data-testid="stMarkdownContainer"] p {
+        font-size: 13.5px !important; font-weight: 600 !important;
+        color: #64748b !important; margin: 0 !important;
+        transition: color 0.12s ease;
+    }
+    div[data-testid="stRadio"] label[data-baseweb="radio"]:hover
+        div[data-testid="stMarkdownContainer"] p { color: #0f172a !important; }
+    div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) {
+        border-bottom-color: #6355ff;
+    }
+    div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked)
+        div[data-testid="stMarkdownContainer"] p { color: #6355ff !important; }
+</style>
+""", unsafe_allow_html=True)
+
+_page = st.radio("Navigation", PAGES, key="nav_page",
+                 horizontal=True, label_visibility="collapsed")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1: EXECUTIVE DASHBOARD  (Aurora layout)
 # ══════════════════════════════════════════════════════════════════════════════
 
-with tab1:
+if _page == PAGES[0]:
 
     # header row: title + traffic-light legend
     st.markdown("""
@@ -1320,7 +1456,7 @@ with tab1:
 # TAB 2: INVENTORY DETAIL
 # ══════════════════════════════════════════════════════════════════════════════
 
-with tab2:
+if _page == PAGES[1]:
 
     inv_kpis = run_query("""
         SELECT
@@ -1392,7 +1528,7 @@ with tab2:
 # TAB 3: OPERATIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
-with tab3:
+if _page == PAGES[2]:
 
     ops_kpis = run_query(f"""
         SELECT
@@ -1471,7 +1607,7 @@ with tab3:
 # TAB 4: REORDER RECOMMENDATIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
-with tab4:
+if _page == PAGES[3]:
 
     reorder_kpis = run_query("""
         SELECT
@@ -1573,7 +1709,7 @@ with tab4:
 # ══════════════════════════════════════════════════════════════════════════════
 import uuid
  
-with tab5:
+if _page == PAGES[4]:
     st.subheader("🤖 AI Supply Chain Analyst")
     st.caption("Ask questions about your inventory, orders, and operations in plain English.")
  
@@ -1693,7 +1829,7 @@ with tab5:
 # TAB 6: ALERT HISTORY
 # ══════════════════════════════════════════════════════════════════════════════
 
-with tab6:
+if _page == PAGES[5]:
     st.subheader("🔔 Alert History & Configuration")
 
     alert_col1, alert_col2 = st.container(), st.container()
@@ -1735,7 +1871,7 @@ with tab6:
 # TAB 7: DATA HEALTH
 # ══════════════════════════════════
 
-with tab7:
+if _page == PAGES[6]:
     st.subheader("🏥 Data Health Monitor")
     st.caption("Real-time data quality checks across your orders and inventory tables.")
 
@@ -1892,14 +2028,12 @@ with tab7:
 # TAB 8 — INVOICES / AP AUTOMATION
 # ═══════════════════════════════════════════════════════════════════════════
 # HOW TO ADD:
-#   1. Find where tabs are created (search for: st.tabs([)
-#      Currently: tab1, tab2, ..., tab7 = st.tabs([...])
-#      Add "💰 Invoices" to the list; assign tab8 = st.tabs(...)[-1]
-#   2. Paste this entire block AFTER the "with tab7:" section, before any
+#   1. Add the "💰 Invoices" label to TAB_KEYS (it becomes PAGES[7]).
+#   2. Paste this entire block after the PAGES[6] section, before any
 #      helper code that comes at the very end of the file.
-# 
- 
-with tab8:
+#
+
+if _page == PAGES[7]:
     st.subheader("💰 AP Automation — Invoice Processing")
     st.caption("Supplier invoices auto-captured from Mail. AI extracts line items and flags pricing discrepancies against your inventory in seconds.")
  
