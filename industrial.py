@@ -207,6 +207,7 @@ T_ALL = {
         "tab_ai": "🤖 Assistant IA",
         "tab_health": "🏥 Santé des données",
         "tab_diag": "🔧 Diagnostic paramétrage",
+        "tab_whatif": "🧪 Simulateur",
         "diag_title": "🔧 Diagnostic du paramétrage",
         "diag_caption": "Comparaison entre ce qui est réglé dans votre ERP et ce que la demande réelle impose.",
         "diag_alerts": "Qualité des alertes de stock bas",
@@ -326,6 +327,7 @@ T_ALL = {
         "tab_ai": "🤖 AI Assistant",
         "tab_health": "🏥 Data health",
         "tab_diag": "🔧 Parameter diagnosis",
+        "tab_whatif": "🧪 What-if simulator",
         "diag_title": "🔧 Parameter diagnosis",
         "diag_caption": "Comparison between what is configured in your ERP and what real demand requires.",
         "diag_alerts": "Low-stock alert quality",
@@ -1437,7 +1439,7 @@ else:
 #      fired to display one screen. Here only the selected page executes.
 PAGES = [
     T["tab_exec"], T["tab_stock"], T["tab_supplier"], T["tab_reorder"],
-    T["tab_ai"], T["tab_health"], T["tab_diag"],
+    T["tab_ai"], T["tab_health"], T["tab_diag"], T["tab_whatif"],
 ]
 
 if "nav_page" not in st.session_state or st.session_state.nav_page not in PAGES:
@@ -1859,15 +1861,15 @@ if _page == PAGES[1]:
         r = inv_kpis.iloc[0]
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.markdown(kpi_card(T["dead_refs"], format_number(r["dead_count"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card(T["dead_refs"], format_number(r["dead_count"]), "kpi-danger", info=("Nombre de références classées dormantes (sans mouvement au-delà du seuil de leur type)." if CLIENT_LANG == "fr" else "Number of references flagged dead (no movement beyond their type's threshold).")), unsafe_allow_html=True)
         with c2:
-            st.markdown(kpi_card(T["excess_refs"], format_number(r["excess_count"]), "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(kpi_card(T["excess_refs"], format_number(r["excess_count"]), "kpi-warning", info=("Nombre de références en surstock (couverture au-delà de la cible du type)." if CLIENT_LANG == "fr" else "Number of overstocked references (coverage above their type's target).")), unsafe_allow_html=True)
         with c3:
-            st.markdown(kpi_card(T["kpi_stockout"], format_number(r["stockout_count"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card(T["kpi_stockout"], format_number(r["stockout_count"]), "kpi-danger", info=("Nombre de références dont la couverture passe sous le seuil d'alerte." if CLIENT_LANG == "fr" else "Number of references whose coverage falls below the alert threshold.")), unsafe_allow_html=True)
         with c4:
             abc_data = run_query("SELECT abc_class, COUNT(*) as cnt FROM inventory WHERE abc_class IS NOT NULL GROUP BY abc_class ORDER BY abc_class")
             abc_str = " | ".join([f"{row['abc_class']}: {row['cnt']}" for _, row in abc_data.iterrows()]) if not abc_data.empty else "N/A"
-            st.markdown(kpi_card(T["abc_split"], abc_str, "kpi-info", small=True), unsafe_allow_html=True)
+            st.markdown(kpi_card(T["abc_split"], abc_str, "kpi-info", small=True, info=("Répartition des références par classe ABC, sur la valeur de consommation annuelle (A ≈ 80 %)." if CLIENT_LANG == "fr" else "Reference split by ABC class, on annual consumption value (A ≈ 80%).")), unsafe_allow_html=True)
 
     st.write("")
 
@@ -2129,18 +2131,19 @@ if _page == PAGES[2]:
         with c1:
             otdv = float(r["otd_rate"])
             st.markdown(kpi_card(T["kpi_otd"], format_pct(otdv),
-                                 "kpi-danger" if otdv < 70 else ("kpi-warning" if otdv < 85 else "kpi-success")),
+                                 "kpi-danger" if otdv < 70 else ("kpi-warning" if otdv < 85 else "kpi-success"),
+                                 info=("Part des commandes fournisseurs livrées à l'heure. ↑ plus fiable (vert) · ↓ dérive (rouge)." if CLIENT_LANG == "fr" else "Share of supplier orders delivered on time. ↑ more reliable (green) · ↓ slipping (red).")),
                         unsafe_allow_html=True)
         with c2:
-            st.markdown(kpi_card(T["col_lt"], f"{float(r['avg_lt']):.1f} j", "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card(T["col_lt"], f"{float(r['avg_lt']):.1f} j", "kpi-info", info=("Délai d'approvisionnement moyen mesuré sur les réceptions réelles." if CLIENT_LANG == "fr" else "Average lead time measured on actual receipts.")), unsafe_allow_html=True)
         with c3:
-            st.markdown(kpi_card(T["col_ltstd"], f"± {float(r['lt_std']):.1f} j", "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(kpi_card(T["col_ltstd"], f"± {float(r['lt_std']):.1f} j", "kpi-warning", info=("Variabilité du délai fournisseur (écart-type). ↑ plus erratique (rouge) · ↓ plus stable (vert)." if CLIENT_LANG == "fr" else "Supplier lead-time variability (std dev). ↑ more erratic (red) · ↓ more stable (green).")), unsafe_allow_html=True)
         with c4:
             lbl = "Fournisseurs actifs" if CLIENT_LANG == "fr" else "Active suppliers"
-            st.markdown(kpi_card(lbl, format_number(r["n_suppliers"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card(lbl, format_number(r["n_suppliers"]), "kpi-info", info=("Nombre de fournisseurs analysés sur la période." if CLIENT_LANG == "fr" else "Number of suppliers analysed over the period.")), unsafe_allow_html=True)
         with c5:
             lbl = "Lignes réceptionnées" if CLIENT_LANG == "fr" else "Received lines"
-            st.markdown(kpi_card(lbl, format_number(r["n_lines"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card(lbl, format_number(r["n_lines"]), "kpi-info", info=("Nombre de lignes de commande fournisseur sur la période." if CLIENT_LANG == "fr" else "Number of supplier order lines over the period.")), unsafe_allow_html=True)
 
     scope_note = ("Seuls les fournisseurs avec au moins 5 réceptions sur la période sélectionnée sont notés."
                   if CLIENT_LANG == "fr" else
@@ -2271,17 +2274,18 @@ if _page == PAGES[3]:
         r = reo_kpis.iloc[0]
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.markdown(kpi_card(T["kpi_stockout"], format_number(r["at_risk"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card(T["kpi_stockout"], format_number(r["at_risk"]), "kpi-danger", info=("Références dont la couverture est sous le seuil d'alerte : à réapprovisionner en priorité." if CLIENT_LANG == "fr" else "References below the alert threshold — reorder first.")), unsafe_allow_html=True)
         with c2:
             lbl = "Couverture mini" if CLIENT_LANG == "fr" else "Min coverage"
-            st.markdown(kpi_card(lbl, f"{float(r['min_cov'] or 0):.0f} j", "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card(lbl, f"{float(r['min_cov'] or 0):.0f} j", "kpi-danger", info=("Couverture la plus faible parmi les références à risque, en jours." if CLIENT_LANG == "fr" else "Lowest coverage among at-risk references, in days.")), unsafe_allow_html=True)
         with c3:
             lbl = "Réf la + urgente" if CLIENT_LANG == "fr" else "Most urgent ref"
-            st.markdown(kpi_card(lbl, _esc(str(r["most_urgent"] or "—")), "kpi-warning", small=True),
+            st.markdown(kpi_card(lbl, _esc(str(r["most_urgent"] or "—")), "kpi-warning", small=True,
+                                 info=("Référence la plus proche de la rupture." if CLIENT_LANG == "fr" else "Reference closest to stockout.")),
                         unsafe_allow_html=True)
         with c4:
             lbl = "Paramètres ERP dérivés" if CLIENT_LANG == "fr" else "Drifted ERP params"
-            st.markdown(kpi_card(lbl, format_number(r["drifted"]), "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(kpi_card(lbl, format_number(r["drifted"]), "kpi-warning", info=("Références dont le point de commande calculé s'écarte de plus de 25 % du paramétrage ERP." if CLIENT_LANG == "fr" else "References whose calculated reorder point deviates over 25% from the ERP setting.")), unsafe_allow_html=True)
 
     st.write("")
     st.subheader(T["reorder_table"])
@@ -2509,17 +2513,17 @@ if _page == PAGES[5]:
         f = freshness.iloc[0]
         fc1, fc2, fc3, fc4 = st.columns(4)
         with fc1:
-            st.markdown(kpi_card(T["refs"], format_number(f["n_refs"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card(T["refs"], format_number(f["n_refs"]), "kpi-info", info=("Nombre de références présentes en base." if CLIENT_LANG == "fr" else "Number of references in the database.")), unsafe_allow_html=True)
         with fc2:
             lbl = "Mouvements" if CLIENT_LANG == "fr" else "Movements"
-            st.markdown(kpi_card(lbl, format_number(f["n_mvt"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card(lbl, format_number(f["n_mvt"]), "kpi-info", info=("Nombre de mouvements de stock ingérés." if CLIENT_LANG == "fr" else "Number of stock movements ingested.")), unsafe_allow_html=True)
         with fc3:
             lbl = "Lignes de commande" if CLIENT_LANG == "fr" else "PO lines"
-            st.markdown(kpi_card(lbl, format_number(f["n_po"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card(lbl, format_number(f["n_po"]), "kpi-info", info=("Nombre de lignes de commande fournisseur ingérées." if CLIENT_LANG == "fr" else "Number of supplier order lines ingested.")), unsafe_allow_html=True)
         with fc4:
             lbl = "Dernier mouvement" if CLIENT_LANG == "fr" else "Last movement"
             lm = str(f["last_mvt"]) if f["last_mvt"] else "—"
-            st.markdown(kpi_card(lbl, lm, "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card(lbl, lm, "kpi-info", info=("Date du dernier mouvement enregistré : indicateur de fraîcheur des données." if CLIENT_LANG == "fr" else "Date of the last recorded movement: a data-freshness indicator.")), unsafe_allow_html=True)
 
     st.write("")
 
@@ -2591,10 +2595,10 @@ if _page == PAGES[5]:
             vc1, vc2 = st.columns(2)
             with vc1:
                 lbl = "Notre valorisation" if CLIENT_LANG == "fr" else "Our valuation"
-                st.markdown(kpi_card(lbl, format_currency(v["ours"]), "kpi-info"), unsafe_allow_html=True)
+                st.markdown(kpi_card(lbl, format_currency(v["ours"]), "kpi-info", info=("Valorisation du stock selon notre calcul (stock × coût unitaire)." if CLIENT_LANG == "fr" else "Stock valuation from our calculation (stock × unit cost).")), unsafe_allow_html=True)
             with vc2:
                 lbl = "Valorisation ERP" if CLIENT_LANG == "fr" else "ERP valuation"
-                st.markdown(kpi_card(lbl, format_currency(v["erp"]), "kpi-info"), unsafe_allow_html=True)
+                st.markdown(kpi_card(lbl, format_currency(v["erp"]), "kpi-info", info=("Valorisation du stock fournie par l'ERP — la source de vérité comptable." if CLIENT_LANG == "fr" else "Stock valuation provided by the ERP — the accounting source of truth.")), unsafe_allow_html=True)
             st.write("")
             if abs(gap) < 1:
                 alert_box("success", "✅ " + (f"Écart de valorisation : {gap:.3f}% — vos données de stock sont fiables."
@@ -2696,19 +2700,23 @@ if _page == PAGES[6]:
             a1, a2, a3, a4 = st.columns(4)
             with a1:
                 lbl = "Alertes déclenchées" if CLIENT_LANG == "fr" else "Alerts triggered"
-                st.markdown(kpi_card(lbl, format_number(n_total_alerts), "kpi-info"),
+                st.markdown(kpi_card(lbl, format_number(n_total_alerts), "kpi-info",
+                                     info=("Nombre total d'alertes de stock bas produites par le paramétrage ERP actuel." if CLIENT_LANG == "fr" else "Total low-stock alerts produced by the current ERP configuration.")),
                             unsafe_allow_html=True)
             with a2:
                 lbl = "Dont justifiées" if CLIENT_LANG == "fr" else "Of which justified"
-                st.markdown(kpi_card(lbl, format_number(n_conf), "kpi-success"),
+                st.markdown(kpi_card(lbl, format_number(n_conf), "kpi-success",
+                                     info=("Alertes ERP confirmées par notre calcul de risque : justifiées." if CLIENT_LANG == "fr" else "ERP alerts confirmed by our risk calculation: justified.")),
                             unsafe_allow_html=True)
             with a3:
                 lbl = "Dont fausses" if CLIENT_LANG == "fr" else "Of which false"
-                st.markdown(kpi_card(lbl, format_number(n_false), "kpi-danger"),
+                st.markdown(kpi_card(lbl, format_number(n_false), "kpi-danger",
+                                     info=("Alertes ERP jugées injustifiées par notre calcul : faux positifs." if CLIENT_LANG == "fr" else "ERP alerts our calculation deems unjustified: false positives.")),
                             unsafe_allow_html=True)
             with a4:
                 lbl = "Risques non vus" if CLIENT_LANG == "fr" else "Undetected risks"
-                st.markdown(kpi_card(lbl, format_number(n_blind), "kpi-danger"),
+                st.markdown(kpi_card(lbl, format_number(n_blind), "kpi-danger",
+                                     info=("Ruptures que notre calcul détecte mais que l'ERP ne signale pas : angles morts." if CLIENT_LANG == "fr" else "Stockouts our calculation catches but the ERP misses: blind spots.")),
                             unsafe_allow_html=True)
 
             al_l, al_r = st.columns([3, 2], gap="medium")
@@ -2866,19 +2874,23 @@ if _page == PAGES[6]:
             t1, t2, t3, t4 = st.columns(4)
             with t1:
                 lbl = "Délai moyen ERP" if CLIENT_LANG == "fr" else "Avg ERP lead time"
-                st.markdown(kpi_card(lbl, f"{float(l['lt_erp']):.1f} j", "kpi-info"),
+                st.markdown(kpi_card(lbl, f"{float(l['lt_erp']):.1f} j", "kpi-info",
+                                     info=("Délai d'approvisionnement tel que saisi dans l'ERP." if CLIENT_LANG == "fr" else "Lead time as configured in the ERP.")),
                             unsafe_allow_html=True)
             with t2:
                 lbl = "Délai moyen réel" if CLIENT_LANG == "fr" else "Avg actual lead time"
-                st.markdown(kpi_card(lbl, f"{float(l['lt_reel']):.1f} j", "kpi-info"),
+                st.markdown(kpi_card(lbl, f"{float(l['lt_reel']):.1f} j", "kpi-info",
+                                     info=("Délai réel mesuré sur les réceptions fournisseurs." if CLIENT_LANG == "fr" else "Actual lead time measured on supplier receipts.")),
                             unsafe_allow_html=True)
             with t3:
                 lbl = "Écart absolu moyen" if CLIENT_LANG == "fr" else "Mean absolute gap"
-                st.markdown(kpi_card(lbl, f"{float(l['ecart_abs']):.1f} j", "kpi-warning"),
+                st.markdown(kpi_card(lbl, f"{float(l['ecart_abs']):.1f} j", "kpi-warning",
+                                     info=("Écart absolu moyen entre le délai ERP et le délai réel." if CLIENT_LANG == "fr" else "Average absolute gap between ERP and actual lead time.")),
                             unsafe_allow_html=True)
             with t4:
                 lbl = "Écart max" if CLIENT_LANG == "fr" else "Max gap"
-                st.markdown(kpi_card(lbl, f"{float(l['ecart_max']):.0f} j", "kpi-danger"),
+                st.markdown(kpi_card(lbl, f"{float(l['ecart_max']):.0f} j", "kpi-danger",
+                                     info=("Écart maximal observé entre délai ERP et délai réel." if CLIENT_LANG == "fr" else "Largest gap observed between ERP and actual lead time.")),
                             unsafe_allow_html=True)
 
             if CLIENT_LANG == "fr":
@@ -2932,6 +2944,193 @@ if _page == PAGES[6]:
                       ("Pas assez de réceptions pour mesurer un délai réel comparable au paramétrage."
                        if CLIENT_LANG == "fr" else
                        "Not enough receipts to measure an actual lead time comparable to the configuration."))
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WHAT-IF SIMULATOR  (read-only: replays STEP 4's formula in Python, writes nothing)
+# ══════════════════════════════════════════════════════════════════════════════
+if _page == T["tab_whatif"]:
+    fr = (CLIENT_LANG == "fr")
+    st.subheader("🧪 " + ("Simulateur de politique de stock" if fr else "Stock policy simulator"))
+    st.markdown(
+        '<div style="font-size:13px;color:#64748b;margin:-6px 0 12px;">' + (
+            "Faites varier le niveau de service, la tension sur les délais et les coûts : stock de "
+            "sécurité, point de commande et cash immobilisé se recalculent en direct. Aucune donnée "
+            "n'est modifiée — vos calculs nocturnes restent la référence."
+            if fr else
+            "Vary service level, lead-time pressure and costs: safety stock, reorder point and tied-up "
+            "cash recompute live. Nothing is written — your nightly calculations stay the source of truth."
+        ) + '</div>', unsafe_allow_html=True)
+
+    sim = run_query("""
+        SELECT i.article_code, i.product_name, i.abc_class,
+               COALESCE(i.avg_daily_consumption,0)                          AS d,
+               COALESCE(i.consumption_stddev,0)                             AS sd,
+               COALESCE(i.actual_lead_time_days, i.erp_lead_time_days, 30)  AS lt,
+               COALESCE(i.lead_time_stddev,0)                               AS slt,
+               COALESCE(i.unit_cost,0)                                      AS unit_cost,
+               COALESCE(i.current_stock,0)                                  AS current_stock,
+               i.moq,
+               COALESCE(i.calculated_safety_stock,0)                        AS ss_now,
+               COALESCE(i.calculated_reorder_point,0)                       AS rop_now,
+               at.holding_cost_rate                                         AS h_rate
+        FROM inventory i
+        JOIN article_types at ON at.code = COALESCE(i.article_type, 'NA')
+        WHERE COALESCE(i.avg_daily_consumption,0) > 0
+    """)
+
+    if sim is None or sim.empty:
+        alert_box("info", ("Lancez le pipeline KPI pour alimenter le simulateur."
+                           if fr else "Run the KPI pipeline to feed the simulator."))
+    else:
+        # Z table (inverse normal) — no scipy dependency. Per-ABC reproduces STEP 4 exactly.
+        Z_TABLE = {90: 1.2816, 95: 1.6449, 97: 1.8808, 98: 2.0537, 99: 2.3263, 99.5: 2.5758}
+        _by_abc = ("Par classe ABC (actuel)" if fr else "By ABC class (current)")
+        _uniform = ("Uniforme" if fr else "Uniform")
+
+        cc1, cc2, cc3 = st.columns(3)
+        with cc1:
+            mode = st.radio(("Niveau de service" if fr else "Service level"),
+                            [_by_abc, _uniform], key="wf_mode")
+            uniform_level = st.select_slider(("Cible uniforme" if fr else "Uniform target"),
+                            options=[90, 95, 97, 98, 99, 99.5], value=95, key="wf_level",
+                            format_func=lambda v: f"{v}%")
+        with cc2:
+            lt_factor = st.slider(("Tension sur les délais (×)" if fr else "Lead-time pressure (×)"),
+                                  0.8, 2.0, 1.0, 0.05, key="wf_ltf")
+            review = st.slider(("Période de révision (j)" if fr else "Review period (d)"),
+                               0, 30, 0, 1, key="wf_R")
+        with cc3:
+            order_cost = st.number_input(("Coût de passation (€/commande)" if fr else "Order cost (€/order)"),
+                                         min_value=0.0, value=50.0, step=10.0, key="wf_S")
+            force_h = st.checkbox(("Forcer un taux de possession unique" if fr else "Force one holding rate"),
+                                  value=False, key="wf_fh")
+            h_pct = st.slider(("Taux de possession annuel (%)" if fr else "Annual holding rate (%)"),
+                              5, 35, 20, 1, key="wf_h", disabled=not force_h)
+
+        # ── vectorised recompute (mirrors industrial_kpi_computation.sql STEP 4) ──
+        d   = pd.to_numeric(sim["d"],   errors="coerce").fillna(0.0)
+        sd  = pd.to_numeric(sim["sd"],  errors="coerce").fillna(0.0)
+        lt  = pd.to_numeric(sim["lt"],  errors="coerce").fillna(30.0)
+        slt = pd.to_numeric(sim["slt"], errors="coerce").fillna(0.0)
+        uc  = pd.to_numeric(sim["unit_cost"], errors="coerce").fillna(0.0)
+        cur = pd.to_numeric(sim["current_stock"], errors="coerce").fillna(0.0)
+        moq = pd.to_numeric(sim["moq"], errors="coerce").fillna(1.0).clip(lower=1.0)
+        hr  = pd.to_numeric(sim["h_rate"], errors="coerce").fillna(0.20)
+        ss_now  = pd.to_numeric(sim["ss_now"],  errors="coerce").fillna(0.0)
+        rop_now = pd.to_numeric(sim["rop_now"], errors="coerce").fillna(0.0)
+
+        lt2 = lt * lt_factor
+        if mode == _by_abc:
+            z = sim["abc_class"].map({"A": 2.05, "B": 1.65, "C": 1.28}).fillna(1.28).astype(float)
+        else:
+            z = pd.Series(Z_TABLE[uniform_level], index=sim.index, dtype=float)
+
+        sigma_term = ((lt2 * sd**2) + (d**2 * slt**2)).clip(lower=0.0) ** 0.5
+        ss_new  = (z * sigma_term).round(2)
+        rop_new = (d * (lt2 + review) + ss_new).round(2)
+
+        h = pd.Series(h_pct / 100.0, index=sim.index) if force_h else hr
+        denom = uc * h
+        eoq = ((2.0 * d * 365.0 * order_cost) / denom.where(denom > 0)) ** 0.5
+        eoq_moq = pd.concat([eoq.fillna(0.0), moq], axis=1).max(axis=1).round(0)
+
+        below_new, below_now = (cur < rop_new), (cur < rop_now)
+        cash_ss_new, cash_ss_now = float((ss_new * uc).sum()), float((ss_now * uc).sum())
+        holding_annual = float((ss_new * uc * h).sum() + (eoq_moq / 2.0 * uc * h).sum())
+        orders_yr = (d * 365.0) / eoq_moq.where(eoq_moq > 0)
+        ordering_annual = float((orders_yr.fillna(0.0) * order_cost).sum())
+        total_cost = holding_annual + ordering_annual
+
+        def _wf_delta(new, old):  # lower = better -> down green, up red
+            if not old:
+                return "", ""
+            p = (new - old) / abs(old) * 100.0
+            if abs(p) < 0.05:
+                return "→ 0.0%", "#94a3b8"
+            up = p > 0
+            return (("↑" if up else "↓") + f" {abs(p):.1f}%"), ("#e5484d" if up else "#12b76a")
+
+        k1, k2, k3, k4 = st.columns(4)
+        with k1:
+            dd = _wf_delta(cash_ss_new, cash_ss_now)
+            st.markdown(kpi_card(("Cash en stock de sécurité" if fr else "Cash in safety stock"),
+                format_currency(cash_ss_new), "kpi-warning", delta=dd[0], delta_color=dd[1],
+                info=("Stock de sécurité valorisé au niveau de service simulé, vs actuel."
+                      if fr else "Valued safety stock at the simulated service level, vs current.")),
+                unsafe_allow_html=True)
+        with k2:
+            dd = _wf_delta(int(below_new.sum()), int(below_now.sum()))
+            st.markdown(kpi_card(("Réfs sous point de commande" if fr else "Refs below reorder point"),
+                format_number(int(below_new.sum())), "kpi-danger", delta=dd[0], delta_color=dd[1],
+                info=("Références dont le stock actuel passe sous le point de commande simulé."
+                      if fr else "References whose current stock falls below the simulated reorder point.")),
+                unsafe_allow_html=True)
+        with k3:
+            st.markdown(kpi_card(("Coût annuel total estimé" if fr else "Est. total annual cost"),
+                format_currency(total_cost), "kpi-info",
+                info=("Possession (sécurité + stock de cycle EOQ/2) + coût de passation."
+                      if fr else "Holding (safety + EOQ/2 cycle stock) + ordering cost.")),
+                unsafe_allow_html=True)
+        with k4:
+            lvl = (("par classe ABC" if fr else "by ABC class") if mode == _by_abc else f"{uniform_level}%")
+            st.markdown(kpi_card(("Niveau de service" if fr else "Service level"),
+                str(lvl), "kpi-success",
+                info=("Niveau de service simulé : la probabilité de ne pas être en rupture pendant le délai."
+                      if fr else "Simulated service level: the probability of not stocking out during lead time.")),
+                unsafe_allow_html=True)
+
+        st.write("")
+        gL, gR = st.columns([3, 2], gap="medium")
+        with gL:
+            st.subheader("Cash ↔ " + ("niveau de service" if fr else "service level"))
+            base_term = sigma_term * uc  # cash contribution per unit of Z
+            lv = [90, 95, 97, 98, 99, 99.5]
+            cash_curve = [float((Z_TABLE[l] * base_term).sum()) for l in lv]
+            figc = go.Figure()
+            figc.add_trace(go.Scatter(x=lv, y=cash_curve, mode="lines+markers",
+                line=dict(color="#6355ff", width=2.5), marker=dict(size=7, color="#6355ff"),
+                fill="tozeroy", fillcolor="rgba(99,85,255,0.10)",
+                hovertemplate="%{x}%<br>%{y:,.0f} " + CURRENCY + "<extra></extra>"))
+            if mode != _by_abc:
+                figc.add_vline(x=uniform_level, line=dict(color="#e5484d", width=1.5, dash="dot"))
+            figc = style_fig(figc, height=300)
+            figc.update_layout(xaxis_title=("Niveau de service (%)" if fr else "Service level (%)"),
+                               yaxis_title="Cash (" + CURRENCY + ")")
+            st.plotly_chart(figc, use_container_width=True, theme=None, config={"displayModeBar": False})
+        with gR:
+            st.subheader("Impact " + ("par classe ABC" if fr else "by ABC class"))
+            imp = pd.DataFrame({"abc": sim["abc_class"].fillna("C"),
+                                "now": ss_now * uc, "sim": ss_new * uc})
+            agg = imp.groupby("abc").sum(numeric_only=True).reindex(["A", "B", "C"]).fillna(0.0)
+            figb = go.Figure()
+            figb.add_trace(go.Bar(x=agg.index, y=agg["now"],
+                                  name=("Actuel" if fr else "Current"), marker_color="#c4b5fd"))
+            figb.add_trace(go.Bar(x=agg.index, y=agg["sim"],
+                                  name=("Simulé" if fr else "Simulated"), marker_color="#6355ff"))
+            figb = style_fig(figb, height=300, legend=True)
+            figb.update_layout(barmode="group", yaxis_title="Cash (" + CURRENCY + ")")
+            st.plotly_chart(figb, use_container_width=True, theme=None, config={"displayModeBar": False})
+
+        st.subheader("Références les plus impactées" if fr else "Most-impacted references")
+        cN = {"code": "Code", "name": ("Désignation" if fr else "Name"),
+              "ss0": ("SS actuel" if fr else "SS now"), "ss1": ("SS simulé" if fr else "SS sim"),
+              "rop0": ("ROP actuel" if fr else "ROP now"), "rop1": ("ROP simulé" if fr else "ROP sim"),
+              "drop": "Δ ROP"}
+        out = pd.DataFrame({
+            cN["code"]: sim["article_code"].values,
+            cN["name"]: sim["product_name"].values,
+            "ABC": sim["abc_class"].fillna("C").values,
+            cN["ss0"]: ss_now.round(0).values,  cN["ss1"]: ss_new.round(0).values,
+            cN["rop0"]: rop_now.round(0).values, cN["rop1"]: rop_new.round(0).values,
+            "EOQ": eoq_moq.values,
+            cN["drop"]: (rop_new - rop_now).round(0).values,
+        })
+        out["_a"] = (rop_new - rop_now).abs().values
+        out = out.sort_values("_a", ascending=False).drop(columns="_a").head(40)
+        _nf = lambda v: format_number(v)
+        render_table(out, formats={cN["ss0"]: _nf, cN["ss1"]: _nf, cN["rop0"]: _nf,
+                                   cN["rop1"]: _nf, "EOQ": _nf, cN["drop"]: _nf})
+
 
 # ── FOOTER ────────────────────────────────────────────────────────────────────
 st.markdown("---")
