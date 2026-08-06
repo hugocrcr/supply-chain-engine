@@ -230,10 +230,10 @@ T_ALL = {
         "kpi_stockout": "Réfs à risque de rupture",
         "help_dead": "Valeur des références sans mouvement depuis trop longtemps (seuil adapté au type d'article). C'est de la trésorerie figée. En hausse = plus de cash immobilisé (rouge), en baisse = cash libéré (vert).",
         "help_excess": "Valeur du stock détenu au-delà du besoin réel de couverture. En hausse = surstock qui s'aggrave (rouge), en baisse = surstock résorbé (vert).",
-        "help_total": "Valeur totale de l'inventaire. Une hausse peut venir de réappros ou de saisonnalité, une baisse d'écoulements ou de ruptures : ni bon ni mauvais en soi, donc la variation reste neutre (gris).",
+        "help_total": "Valeur totale de l'inventaire. L'objectif étant de libérer le fonds de roulement, une baisse = moins de cash immobilisé (vert), une hausse = plus de capital figé (rouge). Une variation quasi nulle reste neutre (gris).",
         "help_holding": "Coût annuel de possession du stock (financement, stockage, assurance, obsolescence). En hausse = plus de coût subi (rouge), en baisse = économies (vert).",
         "help_turnover": "Nombre de fois où le stock est écoulé et renouvelé sur l'année. Plus c'est élevé, mieux le stock tourne. En hausse = meilleure rotation (vert), en baisse = stock qui dort (rouge).",
-        "help_recover": "Trésorerie que vous pourriez libérer en écoulant le stock dormant et excédentaire. Elle suit mécaniquement le stock immobilisé, donc sa variation est affichée en neutre (gris).",
+        "help_recover": "Trésorerie que vous pourriez libérer en écoulant le stock dormant et excédentaire. C'est le gisement d'opportunité identifié : en hausse = plus de cash récupérable détecté (vert), en baisse = opportunité qui se réduit (rouge).",
         "help_bfr": "Fonds de roulement immobilisé dans le stock (le cash « coincé » dans l'inventaire). En hausse = plus de cash bloqué (rouge), en baisse = cash libéré (vert).",
         "help_otd": "Taux de commandes fournisseurs livrées à l'heure (On-Time Delivery). En hausse = fournisseurs plus fiables (vert), en baisse = dérive des délais (rouge).",
         "help_coverage": "Nombre de jours de demande que le stock actuel permet de couvrir. En hausse = tendance au surstock (rouge), en baisse = stock plus tendu vers le juste besoin (vert).",
@@ -349,10 +349,10 @@ T_ALL = {
         "kpi_stockout": "Stockout-risk refs",
         "help_dead": "Value of references with no movement for too long (threshold tuned per article type). This is cash frozen on the shelf. Rising = more cash locked up (red), falling = cash freed (green).",
         "help_excess": "Value of stock held beyond real coverage needs. Rising = overstock getting worse (red), falling = overstock cleared (green).",
-        "help_total": "Total inventory value. A rise can come from restocking or seasonality, a drop from sell-through or stockouts: neither good nor bad on its own, so the change stays neutral (grey).",
+        "help_total": "Total inventory value. Since the goal is to free up working capital, a drop = less cash tied up (green), a rise = more capital frozen (red). A near-flat change stays neutral (grey).",
         "help_holding": "Annual cost of holding stock (financing, storage, insurance, obsolescence). Rising = more cost incurred (red), falling = savings (green).",
         "help_turnover": "How many times stock is sold and replaced over the year. Higher is better. Rising = stock turns faster (green), falling = stock sitting idle (red).",
-        "help_recover": "Cash you could free up by clearing dead and excess stock. It tracks tied-up inventory mechanically, so its change is shown as neutral (grey).",
+        "help_recover": "Cash you could free up by clearing dead and excess stock. It is the identified opportunity: rising = more recoverable cash detected (green), falling = shrinking opportunity (red).",
         "help_bfr": "Working capital tied up in inventory (the cash stuck in stock). Rising = more cash locked (red), falling = cash freed (green).",
         "help_otd": "Share of supplier orders delivered on time (On-Time Delivery). Rising = more reliable suppliers (green), falling = slipping lead times (red).",
         "help_coverage": "Number of days of demand the current stock can cover. Rising = drifting toward overstock (red), falling = leaner stock closer to true need (green).",
@@ -1009,12 +1009,20 @@ def kpi_deltas(hist):
     if hist is None or hist.empty or len(hist) < 2:
         return out
     last, prev = hist.iloc[-1], hist.iloc[-2]
+    # good_down=True  → a DECREASE is good (green when ↓, red when ↑)
+    # good_down=False → an INCREASE is good (green when ↑, red when ↓)
+    # Every metric has a defined good-direction, so grey is reserved for flat
+    # (~0%) movements only — no KPI is permanently grey while it actually moves.
     spec = {
-        "dead_stock_value": True, "excess_stock_value": True,
-        "annual_holding_cost": True, "working_capital_tied": True,
-        "recoverable_cash_est": None, "stock_turnover_ratio": False,
-        "total_stock_value": None, "supplier_otd_rate": False,
-        "avg_coverage_days": True,
+        "dead_stock_value": True,        # less dead stock = cash freed
+        "excess_stock_value": True,      # less overstock = cash freed
+        "annual_holding_cost": True,     # cheaper to hold = better
+        "working_capital_tied": True,    # less capital immobilised = better
+        "total_stock_value": True,       # lower trapped inventory = better (mission)
+        "avg_coverage_days": True,       # shorter coverage = less overstock here
+        "stock_turnover_ratio": False,   # rotate faster = better
+        "supplier_otd_rate": False,      # more on-time = better
+        "recoverable_cash_est": False,   # more identified opportunity = better
     }
     for col, good_down in spec.items():
         try:
@@ -1028,12 +1036,8 @@ def kpi_deltas(hist):
                 continue
             up = pct > 0
             arrow = "↑" if up else "↓"
-            if good_down is None:
-                # Metric with no inherent "good" direction → always neutral grey.
-                color = "#64748b"
-            else:
-                good = (not up) if good_down else up
-                color = "#12b76a" if good else "#e5484d"
+            good = (not up) if good_down else up
+            color = "#12b76a" if good else "#e5484d"
             out[col] = (f"{arrow} {abs(pct):.1f}%", color)
         except (TypeError, ValueError):
             continue
@@ -1621,11 +1625,19 @@ if _page == PAGES[0]:
                     textinfo="percent", textfont=dict(family="Plus Jakarta Sans", size=11, color="#fff"),
                     marker=dict(line=dict(color="#ffffff", width=2)),
                     hovertemplate="<b>%{label}</b><br>%{value:,.0f} " + CURRENCY + "<extra></extra>",
+                    # keep the donut in the top ~66% so the legend has its own band below
+                    domain=dict(x=[0.0, 1.0], y=[0.34, 1.0]),
                 )
-                fig = style_fig(fig, height=300, legend=True)
+                fig = style_fig(fig, height=350, legend=True)
+                fig.update_layout(
+                    margin=dict(l=0, r=0, t=6, b=6),
+                    legend=dict(orientation="h", yanchor="top", y=0.24,
+                                xanchor="center", x=0.5,
+                                font=dict(size=11, color="#334155")),
+                )
                 fig.add_annotation(
                     text=f"<b>{format_currency(total_val)}</b><br><span style='font-size:10px;color:#94a3b8'>{T['kpi_total'].lower()}</span>",
-                    x=0.5, y=0.5, showarrow=False,
+                    x=0.5, y=0.67, showarrow=False,  # centre of the raised donut
                     font=dict(family="Plus Jakarta Sans", size=17, color="#0f172a"),
                 )
                 st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
