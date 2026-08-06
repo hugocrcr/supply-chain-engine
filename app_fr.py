@@ -1363,9 +1363,13 @@ if _page == PAGES[0]:
                 if hist is not None and not hist.empty and "total_inventory_value" in hist.columns:
                     tv = hist.dropna(subset=["total_inventory_value"])
                     if len(tv) >= 2:
-                        ymax = tv["total_inventory_value"].astype(float).max()
-                        # Ancre l'axe à 0 : une petite variation (~qq %) sur un stock
-                        # élevé paraît petite, pas dramatique. Marge au-dessus du pic.
+                        yv = tv["total_inventory_value"].astype(float)
+                        ymin, ymax = float(yv.min()), float(yv.max())
+                        # Zoom : « Ajusté aux données » révèle la variation quotidienne
+                        # d'un stock stable ; « Depuis zéro » donne l'échelle absolue.
+                        scale = st.radio("Échelle", ["Ajusté aux données", "Depuis zéro"],
+                                         horizontal=True, key="inv_trend_scale",
+                                         label_visibility="collapsed")
                         fig = go.Figure()
                         fig.add_trace(go.Scatter(
                             x=tv["kpi_date"], y=tv["total_inventory_value"],
@@ -1375,7 +1379,12 @@ if _page == PAGES[0]:
                             hovertemplate="%{x|%b %d, %Y}<br>$%{y:,.0f}<extra></extra>",
                         ))
                         fig = style_fig(fig, height=280)
-                        fig.update_layout(yaxis=dict(range=[0, ymax * 1.08], gridcolor="#eef0f6"))
+                        if scale == "Depuis zéro":
+                            yr = [0, ymax * 1.08]
+                        else:
+                            pad = (ymax - ymin) * 0.15 or ymax * 0.02
+                            yr = [ymin - pad, ymax + pad]
+                        fig.update_layout(yaxis=dict(range=yr, gridcolor="#eef0f6"))
                         st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
                         st.markdown(
     '<div style="font-size:11px;color:#94a3b8;margin-top:-4px;">'
@@ -1655,7 +1664,16 @@ if _page == PAGES[2]:
                 delivery_status, values="order_count", names="delivery_status", hole=0.55,
                 color_discrete_sequence=["#e5484d", "#6355ff", "#f79009", "#12b76a"],
             )
-            fig.update_traces(marker=dict(line=dict(color="#ffffff", width=2)))
+            # N'étiqueter que les parts assez grandes pour contenir le texte ; les
+            # statuts infimes (<2%) gardent leur légende + survol, sans étiquette déportée.
+            _dpct = delivery_status["order_count"] / delivery_status["order_count"].sum()
+            _dtxt = [f"{p*100:.1f}%" if p >= 0.02 else "" for p in _dpct]
+            fig.update_traces(
+                sort=False, text=_dtxt, textinfo="text", textposition="inside",
+                insidetextorientation="horizontal",
+                marker=dict(line=dict(color="#ffffff", width=2)),
+                hovertemplate="<b>%{label}</b><br>%{value:,.0f} commandes (%{percent})<extra></extra>",
+            )
             fig = style_fig(fig, height=350, legend=True)
             st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
         else:
