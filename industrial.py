@@ -109,7 +109,7 @@ def require_access():
                                     placeholder=field)
             ok = st.form_submit_button(button, use_container_width=True)
         if ok:
-            if hmac.compare_digest(entered or "", expected):
+            if hmac.compare_digest((entered or "").strip(), expected.strip()):
                 st.session_state["_authenticated"] = True
                 st.rerun()
             else:
@@ -228,6 +228,16 @@ T_ALL = {
         "kpi_otd": "OTD fournisseurs",
         "kpi_coverage": "Couverture moyenne",
         "kpi_stockout": "Réfs à risque de rupture",
+        "help_dead": "Valeur des références sans mouvement depuis trop longtemps (seuil adapté au type d'article). C'est de la trésorerie figée. En hausse = plus de cash immobilisé (rouge), en baisse = cash libéré (vert).",
+        "help_excess": "Valeur du stock détenu au-delà du besoin réel de couverture. En hausse = surstock qui s'aggrave (rouge), en baisse = surstock résorbé (vert).",
+        "help_total": "Valeur totale de l'inventaire. Une hausse peut venir de réappros ou de saisonnalité, une baisse d'écoulements ou de ruptures : ni bon ni mauvais en soi, donc la variation reste neutre (gris).",
+        "help_holding": "Coût annuel de possession du stock (financement, stockage, assurance, obsolescence). En hausse = plus de coût subi (rouge), en baisse = économies (vert).",
+        "help_turnover": "Nombre de fois où le stock est écoulé et renouvelé sur l'année. Plus c'est élevé, mieux le stock tourne. En hausse = meilleure rotation (vert), en baisse = stock qui dort (rouge).",
+        "help_recover": "Trésorerie que vous pourriez libérer en écoulant le stock dormant et excédentaire. Elle suit mécaniquement le stock immobilisé, donc sa variation est affichée en neutre (gris).",
+        "help_bfr": "Fonds de roulement immobilisé dans le stock (le cash « coincé » dans l'inventaire). En hausse = plus de cash bloqué (rouge), en baisse = cash libéré (vert).",
+        "help_otd": "Taux de commandes fournisseurs livrées à l'heure (On-Time Delivery). En hausse = fournisseurs plus fiables (vert), en baisse = dérive des délais (rouge).",
+        "help_coverage": "Nombre de jours de demande que le stock actuel permet de couvrir. En hausse = tendance au surstock (rouge), en baisse = stock plus tendu vers le juste besoin (vert).",
+        "help_stockout": "Nombre de références dont le stock risque de tomber sous le seuil de sécurité avant le prochain réapprovisionnement.",
         "chart_dead_family": "Valeur du stock dormant par famille",
         "chart_type_mix": "Répartition par type d'article",
         "chart_abcxyz": "Matrice ABC × XYZ",
@@ -337,6 +347,16 @@ T_ALL = {
         "kpi_otd": "Supplier OTD",
         "kpi_coverage": "Avg coverage",
         "kpi_stockout": "Stockout-risk refs",
+        "help_dead": "Value of references with no movement for too long (threshold tuned per article type). This is cash frozen on the shelf. Rising = more cash locked up (red), falling = cash freed (green).",
+        "help_excess": "Value of stock held beyond real coverage needs. Rising = overstock getting worse (red), falling = overstock cleared (green).",
+        "help_total": "Total inventory value. A rise can come from restocking or seasonality, a drop from sell-through or stockouts: neither good nor bad on its own, so the change stays neutral (grey).",
+        "help_holding": "Annual cost of holding stock (financing, storage, insurance, obsolescence). Rising = more cost incurred (red), falling = savings (green).",
+        "help_turnover": "How many times stock is sold and replaced over the year. Higher is better. Rising = stock turns faster (green), falling = stock sitting idle (red).",
+        "help_recover": "Cash you could free up by clearing dead and excess stock. It tracks tied-up inventory mechanically, so its change is shown as neutral (grey).",
+        "help_bfr": "Working capital tied up in inventory (the cash stuck in stock). Rising = more cash locked (red), falling = cash freed (green).",
+        "help_otd": "Share of supplier orders delivered on time (On-Time Delivery). Rising = more reliable suppliers (green), falling = slipping lead times (red).",
+        "help_coverage": "Number of days of demand the current stock can cover. Rising = drifting toward overstock (red), falling = leaner stock closer to true need (green).",
+        "help_stockout": "Number of references whose stock may drop below the safety threshold before the next replenishment.",
         "chart_dead_family": "Dead stock value by family",
         "chart_type_mix": "Breakdown by article type",
         "chart_abcxyz": "ABC × XYZ matrix",
@@ -488,6 +508,38 @@ st.markdown("""
         font-size: 10px; font-weight: 600; letter-spacing: 0.07em;
         text-transform: uppercase; color: #94a3b8; line-height: 1.2;
     }
+    .kpi-i {
+        position: relative; margin-left: auto; flex: none; width: 15px; height: 15px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 50%; background: #eef0f6; color: #94a3b8;
+        border: 1px solid rgba(15,23,42,0.05);
+        font-size: 10px; font-weight: 700; font-style: normal;
+        font-family: Georgia, 'Times New Roman', serif; line-height: 1; cursor: help;
+        transition: background .15s, color .15s; outline: none;
+    }
+    .kpi-i:hover, .kpi-i:focus { background: #6355ff; color: #ffffff; border-color: #6355ff; }
+    /* styled hover popover — replaces the native title tooltip */
+    .kpi-tip {
+        position: absolute; top: calc(100% + 9px); right: -7px; width: 244px;
+        background: #0f172a; color: #e2e8f0;
+        font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+        font-size: 11.5px; font-weight: 500; font-style: normal; line-height: 1.5;
+        letter-spacing: normal; text-transform: none; text-align: left;
+        padding: 11px 13px; border-radius: 11px;
+        box-shadow: 0 14px 32px -10px rgba(15,23,42,0.55);
+        opacity: 0; visibility: hidden; transform: translateY(-4px);
+        transition: opacity .16s ease, transform .16s ease;
+        z-index: 9999; pointer-events: none; white-space: normal;
+    }
+    .kpi-tip::before {
+        content: ""; position: absolute; bottom: 100%; right: 11px;
+        border: 6px solid transparent; border-bottom-color: #0f172a;
+    }
+    .kpi-i:hover .kpi-tip, .kpi-i:focus .kpi-tip {
+        opacity: 1; visibility: visible; transform: translateY(0);
+    }
+    /* let the popover escape the KPI row/column instead of being clipped */
+    [data-testid="column"], [data-testid="stHorizontalBlock"] { overflow: visible !important; }
     .kpi-value { font-size: 27px; font-weight: 800; letter-spacing: -0.025em; line-height: 1.05; }
     .kpi-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
     .kpi-delta { font-size: 12px; font-weight: 700; }
@@ -649,16 +701,18 @@ def sparkline_svg(series, color, w=74, h=24):
     )
 
 
-def kpi_card(label, value, card_class="", delta="", delta_color="", spark="", small=False):
+def kpi_card(label, value, card_class="", delta="", delta_color="", spark="", small=False, info=""):
     foot = ""
     if delta or spark:
         dcol = delta_color or "#64748b"
         delta_html = f'<span class="kpi-delta" style="color:{dcol}">{delta}</span>' if delta else "<span></span>"
         foot = f'<div class="kpi-foot">{delta_html}{spark}</div>'
     vstyle = "font-size:15px;line-height:1.25;white-space:normal;word-break:break-word;" if small else ""
+    info_html = (f'<span class="kpi-i" tabindex="0">i'
+                 f'<span class="kpi-tip">{_esc(info)}</span></span>') if info else ""
     return f"""
     <div class="kpi-card {card_class}">
-        <div class="kpi-top"><span class="kpi-dot"></span><span class="kpi-label">{label}</span></div>
+        <div class="kpi-top"><span class="kpi-dot"></span><span class="kpi-label">{label}</span>{info_html}</div>
         <div class="kpi-value" style="{vstyle}">{value}</div>
         {foot}
     </div>
@@ -968,9 +1022,14 @@ def kpi_deltas(hist):
             if a in (None, 0) or pd.isna(a) or pd.isna(b):
                 continue
             pct = (float(b) - float(a)) / abs(float(a)) * 100
-            up = pct >= 0
+            # No material change → neutral grey, flat arrow (never green/red on ~0%).
+            if abs(pct) < 0.05:
+                out[col] = ("→ 0.0%", "#94a3b8")
+                continue
+            up = pct > 0
             arrow = "↑" if up else "↓"
             if good_down is None:
+                # Metric with no inherent "good" direction → always neutral grey.
                 color = "#64748b"
             else:
                 good = (not up) if good_down else up
@@ -1441,12 +1500,13 @@ if _page == PAGES[0]:
             pass
         return []
 
-    def _card(label, col, value, klass):
+    def _card(label, col, value, klass, info=""):
         d = deltas.get(col, ("", ""))
         return kpi_card(
             label, value, klass,
             delta=d[0], delta_color=d[1],
             spark=sparkline_svg(_series(col), STATUS[klass]["spark"]),
+            info=info,
         )
 
     if not kpi_data.empty:
@@ -1454,43 +1514,53 @@ if _page == PAGES[0]:
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         with c1:
             st.markdown(_card(T["kpi_dead"], "dead_stock_value",
-                              format_currency(row["dead_stock_value"]), "kpi-danger"), unsafe_allow_html=True)
+                              format_currency(row["dead_stock_value"]), "kpi-danger",
+                              info=T["help_dead"]), unsafe_allow_html=True)
         with c2:
             st.markdown(_card(T["kpi_excess"], "excess_stock_value",
-                              format_currency(row["excess_stock_value"]), "kpi-warning"), unsafe_allow_html=True)
+                              format_currency(row["excess_stock_value"]), "kpi-warning",
+                              info=T["help_excess"]), unsafe_allow_html=True)
         with c3:
             st.markdown(_card(T["kpi_total"], "total_stock_value",
-                              format_currency(row["total_stock_value"]), "kpi-info"), unsafe_allow_html=True)
+                              format_currency(row["total_stock_value"]), "kpi-info",
+                              info=T["help_total"]), unsafe_allow_html=True)
         with c4:
             st.markdown(_card(T["kpi_holding"], "annual_holding_cost",
-                              format_currency(row["annual_holding_cost"]), "kpi-warning"), unsafe_allow_html=True)
+                              format_currency(row["annual_holding_cost"]), "kpi-warning",
+                              info=T["help_holding"]), unsafe_allow_html=True)
         with c5:
             turn = row["stock_turnover_ratio"]
             tclass = "kpi-danger" if (turn is not None and float(turn) < 2) else "kpi-success"
             st.markdown(_card(T["kpi_turnover"], "stock_turnover_ratio",
-                              format_number(turn, 2) + "x", tclass), unsafe_allow_html=True)
+                              format_number(turn, 2) + "x", tclass,
+                              info=T["help_turnover"]), unsafe_allow_html=True)
         with c6:
             st.markdown(_card(T["kpi_recover"], "recoverable_cash_est",
-                              format_currency(row["recoverable_cash_est"]), "kpi-success"), unsafe_allow_html=True)
+                              format_currency(row["recoverable_cash_est"]), "kpi-success",
+                              info=T["help_recover"]), unsafe_allow_html=True)
 
         st.write("")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown(_card(T["kpi_bfr"], "working_capital_tied",
-                              format_currency(row["working_capital_tied"]), "kpi-warning"), unsafe_allow_html=True)
+                              format_currency(row["working_capital_tied"]), "kpi-warning",
+                              info=T["help_bfr"]), unsafe_allow_html=True)
         with c2:
             otd = row["supplier_otd_rate"]
             oclass = "kpi-danger" if (otd is not None and float(otd) < 70) else (
                 "kpi-warning" if (otd is not None and float(otd) < 85) else "kpi-success")
-            st.markdown(_card(T["kpi_otd"], "supplier_otd_rate", format_pct(otd), oclass), unsafe_allow_html=True)
+            st.markdown(_card(T["kpi_otd"], "supplier_otd_rate", format_pct(otd), oclass,
+                              info=T["help_otd"]), unsafe_allow_html=True)
         with c3:
             cov = row["avg_coverage_days"]
             cclass = "kpi-danger" if (cov is not None and float(cov) > 180) else "kpi-info"
             st.markdown(_card(T["kpi_coverage"], "avg_coverage_days",
-                              format_number(cov, 0) + " j", cclass), unsafe_allow_html=True)
+                              format_number(cov, 0) + " j", cclass,
+                              info=T["help_coverage"]), unsafe_allow_html=True)
         with c4:
             st.markdown(kpi_card(T["kpi_stockout"],
-                                 format_number(row["stockout_risk_ref_count"]), "kpi-danger"), unsafe_allow_html=True)
+                                 format_number(row["stockout_risk_ref_count"]), "kpi-danger",
+                                 info=T["help_stockout"]), unsafe_allow_html=True)
     else:
         alert_box("info", T["run_pipeline"])
 
@@ -1567,9 +1637,9 @@ if _page == PAGES[0]:
             if hist is not None and not hist.empty and "total_stock_value" in hist.columns:
                 tv = hist.dropna(subset=["total_stock_value"])
                 if len(tv) >= 2:
-                    ymin = tv["total_stock_value"].astype(float).min()
                     ymax = tv["total_stock_value"].astype(float).max()
-                    pad = (ymax - ymin) * 0.15 or ymax * 0.02
+                    # Anchor the axis at 0 so a small (~few %) swing on a large stock
+                    # value reads as small, not dramatic. Headroom above the peak.
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(
                         x=tv["kpi_date"], y=tv["total_stock_value"],
@@ -1579,7 +1649,7 @@ if _page == PAGES[0]:
                         hovertemplate="%{x|%d/%m/%Y}<br>%{y:,.0f} " + CURRENCY + "<extra></extra>",
                     ))
                     fig = style_fig(fig, height=280)
-                    fig.update_layout(yaxis=dict(range=[max(0, ymin - pad), ymax + pad], gridcolor="#eef0f6"))
+                    fig.update_layout(yaxis=dict(range=[0, ymax * 1.08], gridcolor="#eef0f6"))
                     st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
                 else:
                     alert_box("info", T["not_enough_hist"])
