@@ -237,6 +237,43 @@ st.markdown("""
     .kpi-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
     .kpi-delta { font-size: 12px; font-weight: 700; }
 
+    /* ── info "i" badge + hover popover ──────────────────────────────────── */
+    .kpi-i {
+        position: relative; margin-left: auto; flex: none; width: 15px; height: 15px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 50%; background: #eef0f6; color: #94a3b8;
+        border: 1px solid rgba(15,23,42,0.05);
+        font-size: 10px; font-weight: 700; font-style: normal;
+        font-family: Georgia, 'Times New Roman', serif; line-height: 1; cursor: help;
+        transition: background .15s, color .15s; outline: none;
+    }
+    .kpi-i:hover, .kpi-i:focus { background: #6355ff; color: #ffffff; border-color: #6355ff; }
+    .kpi-tip {
+        position: absolute; top: calc(100% + 9px); right: -7px; width: 232px;
+        background: #ffffff; color: #475569;
+        border: 1px solid rgba(15,23,42,0.08);
+        font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+        font-size: 11.5px; font-weight: 500; font-style: normal; line-height: 1.55;
+        letter-spacing: normal; text-transform: none; text-align: left;
+        padding: 11px 13px; border-radius: 12px;
+        box-shadow: 0 12px 28px -14px rgba(15,23,42,0.28);
+        opacity: 0; visibility: hidden; transform: translateY(-4px);
+        transition: opacity .16s ease, transform .16s ease;
+        z-index: 9999; pointer-events: none; white-space: normal;
+    }
+    .kpi-tip::before {
+        content: ""; position: absolute; bottom: 100%; right: 11px;
+        border: 6px solid transparent; border-bottom-color: #ffffff;
+    }
+    .kpi-tip::after {
+        content: ""; position: absolute; bottom: calc(100% + 1px); right: 10px;
+        border: 7px solid transparent; border-bottom-color: rgba(15,23,42,0.08); z-index: -1;
+    }
+    .kpi-i:hover .kpi-tip, .kpi-i:focus .kpi-tip {
+        opacity: 1; visibility: visible; transform: translateY(0);
+    }
+    [data-testid="column"], [data-testid="stHorizontalBlock"] { overflow: visible !important; }
+
     /* status colors */
     .kpi-danger  .kpi-dot { background: #e5484d; } .kpi-danger  .kpi-value { color: #e5484d; }
     .kpi-warning .kpi-dot { background: #f79009; } .kpi-warning .kpi-value { color: #f79009; }
@@ -426,7 +463,7 @@ def sparkline_svg(series, color, w=74, h=24):
     )
 
 
-def kpi_card(label, value, card_class="", delta="", delta_color="", spark="", small=False):
+def kpi_card(label, value, card_class="", delta="", delta_color="", spark="", small=False, info=""):
     """Aurora KPI card: status dot + label, big traffic-light value, delta + sparkline."""
     foot = ""
     if delta or spark:
@@ -434,9 +471,11 @@ def kpi_card(label, value, card_class="", delta="", delta_color="", spark="", sm
         delta_html = f'<span class="kpi-delta" style="color:{dcol}">{delta}</span>' if delta else "<span></span>"
         foot = f'<div class="kpi-foot">{delta_html}{spark}</div>'
     vstyle = "font-size:15px;line-height:1.25;white-space:normal;word-break:break-word;" if small else ""
+    info_html = (f'<span class="kpi-i" tabindex="0">i'
+                 f'<span class="kpi-tip">{_esc(info)}</span></span>') if info else ""
     return f"""
     <div class="kpi-card {card_class}">
-        <div class="kpi-top"><span class="kpi-dot"></span><span class="kpi-label">{label}</span></div>
+        <div class="kpi-top"><span class="kpi-dot"></span><span class="kpi-label">{label}</span>{info_html}</div>
         <div class="kpi-value" style="{vstyle}">{value}</div>
         {foot}
     </div>
@@ -706,10 +745,17 @@ def kpi_deltas(hist):
     if hist is None or hist.empty or len(hist) < 2:
         return out
     last, prev = hist.iloc[-1], hist.iloc[-2]
-    # good_down=True => a decrease is good (cost/risk metrics)
+    # good_down=True  => a decrease is good (green ↓, red ↑)
+    # good_down=False => an increase is good (green ↑, red ↓)
+    # Every metric has a defined good-direction, so grey is reserved for flat
+    # (~0%) movements only — no KPI is permanently grey while it actually moves.
     spec = {
-        "dead_stock_value": True, "excess_stock_value": True, "holding_cost_monthly": True,
-        "stockout_cost": True, "inventory_turnover": False, "total_inventory_value": None,
+        "dead_stock_value": True,        # less dead stock = cash freed
+        "excess_stock_value": True,      # less overstock = cash freed
+        "holding_cost_monthly": True,    # cheaper to hold = better
+        "stockout_cost": True,           # fewer lost sales = better
+        "total_inventory_value": True,   # lower trapped inventory = better
+        "inventory_turnover": False,     # rotate faster = better
     }
     for col, good_down in spec.items():
         try:
@@ -717,13 +763,14 @@ def kpi_deltas(hist):
             if a in (None, 0) or pd.isna(a) or pd.isna(b):
                 continue
             pct = (b - a) / abs(a) * 100
-            up = pct >= 0
+            # No material change → neutral grey, flat arrow (never green/red on ~0%).
+            if abs(pct) < 0.05:
+                out[col] = ("→ 0.0%", "#94a3b8")
+                continue
+            up = pct > 0
             arrow = "↑" if up else "↓"
-            if good_down is None:
-                color = "#64748b"  # neutral (total inventory value)
-            else:
-                good = (not up) if good_down else up
-                color = "#12b76a" if good else "#e5484d"
+            good = (not up) if good_down else up
+            color = "#12b76a" if good else "#e5484d"
             out[col] = (f"{arrow} {abs(pct):.1f}%", color)
         except (TypeError, ValueError):
             continue
@@ -1200,12 +1247,13 @@ if _page == PAGES[0]:
             pass
         return []
 
-    def _card(label, col, value, klass):
+    def _card(label, col, value, klass, info=""):
         d = deltas.get(col, ("", ""))
         return kpi_card(
             label, value, klass,
             delta=d[0], delta_color=d[1],
             spark=sparkline_svg(_series(col), STATUS[klass]["spark"]),
+            info=info,
         )
 
     if not kpi_data.empty:
@@ -1213,18 +1261,24 @@ if _page == PAGES[0]:
 
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         with c1:
-            st.markdown(_card("Stock dormant", "dead_stock_value", format_currency(row["dead_stock_value"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(_card("Stock dormant", "dead_stock_value", format_currency(row["dead_stock_value"]), "kpi-danger",
+                              info="Stock sans vente depuis trop longtemps : de la trésorerie figée. ↑ plus de cash bloqué (rouge) · ↓ cash libéré (vert)."), unsafe_allow_html=True)
         with c2:
-            st.markdown(_card("Stock excédentaire", "excess_stock_value", format_currency(row["excess_stock_value"]), "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(_card("Stock excédentaire", "excess_stock_value", format_currency(row["excess_stock_value"]), "kpi-warning",
+                              info="Stock détenu au-delà du besoin réel. ↑ surstock qui s'aggrave (rouge) · ↓ surstock résorbé (vert)."), unsafe_allow_html=True)
         with c3:
-            st.markdown(_card("Stock total", "total_inventory_value", format_currency(row["total_inventory_value"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(_card("Stock total", "total_inventory_value", format_currency(row["total_inventory_value"]), "kpi-info",
+                              info="Valeur totale du stock en main. ↓ moins de capital immobilisé (vert) · ↑ plus de cash figé (rouge)."), unsafe_allow_html=True)
         with c4:
-            st.markdown(_card("Coût de stockage / Mois", "holding_cost_monthly", format_currency(row["holding_cost_monthly"]), "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(_card("Coût de stockage / Mois", "holding_cost_monthly", format_currency(row["holding_cost_monthly"]), "kpi-warning",
+                              info="Coût mensuel de possession du stock (capital, entreposage, assurance, démarque). ↓ économies (vert) · ↑ plus de coût (rouge)."), unsafe_allow_html=True)
         with c5:
             turnover_class = "kpi-danger" if row["inventory_turnover"] < 2 else "kpi-success"
-            st.markdown(_card("Rotation des stocks", "inventory_turnover", format_number(row["inventory_turnover"], 2) + "x", turnover_class), unsafe_allow_html=True)
+            st.markdown(_card("Rotation des stocks", "inventory_turnover", format_number(row["inventory_turnover"], 2) + "x", turnover_class,
+                              info="Nombre de fois où le stock est vendu et renouvelé sur la période. ↑ meilleure rotation (vert) · ↓ stock qui dort (rouge)."), unsafe_allow_html=True)
         with c6:
-            st.markdown(_card("Coût de rupture / Mois", "stockout_cost", format_currency(row["stockout_cost"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(_card("Coût de rupture / Mois", "stockout_cost", format_currency(row["stockout_cost"]), "kpi-danger",
+                              info="Marge mensuelle estimée perdue à cause des ruptures. ↓ moins de ventes perdues (vert) · ↑ plus de ventes perdues (rouge)."), unsafe_allow_html=True)
 
     st.write("")
 
@@ -1285,11 +1339,19 @@ if _page == PAGES[0]:
                     textinfo="percent", textfont=dict(family="Plus Jakarta Sans", size=12, color="#fff"),
                     marker=dict(line=dict(color="#ffffff", width=2)),
                     hovertemplate="<b>%{label}</b><br>$%{value:,.0f}<extra></extra>",
+                    # keep the donut in the top ~66% so the legend has its own band below
+                    domain=dict(x=[0.0, 1.0], y=[0.34, 1.0]),
                 )
-                fig = style_fig(fig, height=300, legend=True)
+                fig = style_fig(fig, height=350, legend=True)
+                fig.update_layout(
+                    margin=dict(l=0, r=0, t=6, b=6),
+                    legend=dict(orientation="h", yanchor="top", y=0.24,
+                                xanchor="center", x=0.5,
+                                font=dict(size=11, color="#334155")),
+                )
                 fig.add_annotation(
                     text=f"<b>{format_currency(total_excess)}</b><br><span style='font-size:10px;color:#94a3b8'>excédent</span>",
-                    x=0.5, y=0.5, showarrow=False,
+                    x=0.5, y=0.67, showarrow=False,  # centre of the raised donut
                     font=dict(family="Plus Jakarta Sans", size=18, color="#0f172a"),
                 )
                 st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
@@ -1301,9 +1363,9 @@ if _page == PAGES[0]:
                 if hist is not None and not hist.empty and "total_inventory_value" in hist.columns:
                     tv = hist.dropna(subset=["total_inventory_value"])
                     if len(tv) >= 2:
-                        ymin = tv["total_inventory_value"].min()
-                        ymax = tv["total_inventory_value"].max()
-                        pad = (ymax - ymin) * 0.15 or ymax * 0.02
+                        ymax = tv["total_inventory_value"].astype(float).max()
+                        # Ancre l'axe à 0 : une petite variation (~qq %) sur un stock
+                        # élevé paraît petite, pas dramatique. Marge au-dessus du pic.
                         fig = go.Figure()
                         fig.add_trace(go.Scatter(
                             x=tv["kpi_date"], y=tv["total_inventory_value"],
@@ -1313,7 +1375,7 @@ if _page == PAGES[0]:
                             hovertemplate="%{x|%b %d, %Y}<br>$%{y:,.0f}<extra></extra>",
                         ))
                         fig = style_fig(fig, height=280)
-                        fig.update_layout(yaxis=dict(range=[max(0, ymin - pad), ymax + pad], gridcolor="#eef0f6"))
+                        fig.update_layout(yaxis=dict(range=[0, ymax * 1.08], gridcolor="#eef0f6"))
                         st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
                         st.markdown(
     '<div style="font-size:11px;color:#94a3b8;margin-top:-4px;">'
@@ -1467,15 +1529,15 @@ if _page == PAGES[1]:
         r = inv_kpis.iloc[0]
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.markdown(kpi_card("SKUs dormants", format_number(r["dead_sku_count"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card("SKUs dormants", format_number(r["dead_sku_count"]), "kpi-danger", info="Nombre de SKUs classés en stock dormant (sans vente depuis trop longtemps). ↑ plus de cash bloqué (rouge) · ↓ écoulé (vert)."), unsafe_allow_html=True)
         with c2:
-            st.markdown(kpi_card("SKUs excédentaires", format_number(r["excess_sku_count"]), "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(kpi_card("SKUs excédentaires", format_number(r["excess_sku_count"]), "kpi-warning", info="Nombre de SKUs détenus au-delà du besoin réel. ↑ surstock qui s'aggrave (rouge) · ↓ résorbé (vert)."), unsafe_allow_html=True)
         with c3:
-            st.markdown(kpi_card("Sous seuil de réappro", format_number(r["below_reorder"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Sous seuil de réappro", format_number(r["below_reorder"]), "kpi-danger", info="SKUs sous leur point de commande — risque de rupture. ↑ plus à risque (rouge) · ↓ moins (vert)."), unsafe_allow_html=True)
         with c4:
             abc_data = run_query("SELECT abc_class, COUNT(*) as cnt FROM inventory GROUP BY abc_class ORDER BY abc_class")
             abc_str = " | ".join([f"{row['abc_class']}: {row['cnt']}" for _, row in abc_data.iterrows()]) if not abc_data.empty else "N/A"
-            st.markdown(kpi_card("Classification ABC", abc_str, "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Classification ABC", abc_str, "kpi-info", info="Répartition des SKUs par classe ABC sur la contribution au CA (A ≈ top 80 %)."), unsafe_allow_html=True)
 
     st.write("")
 
@@ -1545,15 +1607,15 @@ if _page == PAGES[2]:
         c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
             st.markdown(kpi_card("Taux OTD fournisseur", format_pct(r["otd_rate"]),
-                "kpi-danger" if r["otd_rate"] < 80 else "kpi-success"), unsafe_allow_html=True)
+                "kpi-danger" if r["otd_rate"] < 80 else "kpi-success", info="Part des commandes fournisseurs livrées à l'heure. ↑ plus fiable (vert) · ↓ dérive (rouge)."), unsafe_allow_html=True)
         with c2:
-            st.markdown(kpi_card("Délai moyen", f"{r['avg_lead_time']:.1f} jours", "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Délai moyen", f"{r['avg_lead_time']:.1f} jours", "kpi-info", info="Délai d'approvisionnement fournisseur moyen. ↓ plus court, plus réactif (vert) · ↑ plus long (rouge)."), unsafe_allow_html=True)
         with c3:
-            st.markdown(kpi_card("Variance du délai", f"{r['lead_time_variance']:.2f}", "kpi-warning"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Variance du délai", f"{r['lead_time_variance']:.2f}", "kpi-warning", info="Variabilité du délai fournisseur. ↑ plus erratique (rouge) · ↓ plus stable (vert)."), unsafe_allow_html=True)
         with c4:
-            st.markdown(kpi_card("Coût par commande", format_currency(r["cost_per_order"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Coût par commande", format_currency(r["cost_per_order"]), "kpi-info", info="Coût de traitement moyen par commande. ↓ moins cher (vert) · ↑ plus cher (rouge)."), unsafe_allow_html=True)
         with c5:
-            st.markdown(kpi_card("Traitement moyen", f"{r['avg_fulfillment_time']:.1f} jours", "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Traitement moyen", f"{r['avg_fulfillment_time']:.1f} jours", "kpi-info", info="Temps moyen de traitement d'une commande. ↓ plus rapide (vert) · ↑ plus lent (rouge)."), unsafe_allow_html=True)
 
     st.write("")
 
@@ -1629,14 +1691,14 @@ if _page == PAGES[3]:
         r = reorder_kpis.iloc[0]
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.markdown(kpi_card("SKUs sous seuil", format_number(r["below_reorder"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card("SKUs sous seuil", format_number(r["below_reorder"]), "kpi-danger", info="SKUs à réapprovisionner maintenant — stock sous le point de commande. ↑ plus à commander (rouge) · ↓ moins (vert)."), unsafe_allow_html=True)
         with c2:
-            st.markdown(kpi_card("Rupture la + urgente", f"{r['most_urgent_days']:.0f} jours", "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Rupture la + urgente", f"{r['most_urgent_days']:.0f} jours", "kpi-danger", info="Jours de stock restants pour le SKU le plus urgent — plus c'est bas, plus c'est critique."), unsafe_allow_html=True)
         with c3:
             sku_name = _esc(r["most_urgent_sku"] or "N/A")
-            st.markdown(kpi_card("SKU le + urgent", sku_name, "kpi-warning", small=True), unsafe_allow_html=True)
+            st.markdown(kpi_card("SKU le + urgent", sku_name, "kpi-warning", small=True, info="Le SKU le plus proche de la rupture."), unsafe_allow_html=True)
         with c4:
-            st.markdown(kpi_card("Coût de rupture / Mois", format_currency(r["stockout_cost"]), "kpi-danger"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Coût de rupture / Mois", format_currency(r["stockout_cost"]), "kpi-danger", info="Marge mensuelle estimée perdue à cause des ruptures. ↓ moins de ventes perdues (vert) · ↑ plus (rouge)."), unsafe_allow_html=True)
 
     st.write("")
 
@@ -1883,15 +1945,15 @@ if _page == PAGES[6]:
         f = freshness.iloc[0]
         fc1, fc2, fc3, fc4 = st.columns(4)
         with fc1:
-            st.markdown(kpi_card("Total commandes", format_number(f["total_orders"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Total commandes", format_number(f["total_orders"]), "kpi-info", info="Nombre total de commandes ingérées dans la base."), unsafe_allow_html=True)
         with fc2:
-            st.markdown(kpi_card("Total SKUs", format_number(f["total_skus"]), "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Total SKUs", format_number(f["total_skus"]), "kpi-info", info="Nombre de SKUs suivis."), unsafe_allow_html=True)
         with fc3:
             latest = str(f["latest_order"])[:10] if f["latest_order"] else "N/A"
-            st.markdown(kpi_card("Latest Order", latest, "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Latest Order", latest, "kpi-info", info="Date de la commande la plus récente ingérée — indicateur de fraîcheur des données."), unsafe_allow_html=True)
         with fc4:
             inv_update = str(f["last_inventory_update"])[:10] if f["last_inventory_update"] else "N/A"
-            st.markdown(kpi_card("Last Inventory Sync", inv_update, "kpi-info"), unsafe_allow_html=True)
+            st.markdown(kpi_card("Last Inventory Sync", inv_update, "kpi-info", info="Dernière synchronisation du stock — indicateur de fraîcheur des données."), unsafe_allow_html=True)
 
     st.write("")
 
