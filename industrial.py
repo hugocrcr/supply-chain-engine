@@ -228,16 +228,16 @@ T_ALL = {
         "kpi_otd": "OTD fournisseurs",
         "kpi_coverage": "Couverture moyenne",
         "kpi_stockout": "Réfs à risque de rupture",
-        "help_dead": "Valeur des références sans mouvement depuis trop longtemps (seuil adapté au type d'article). C'est de la trésorerie figée. En hausse = plus de cash immobilisé (rouge), en baisse = cash libéré (vert).",
-        "help_excess": "Valeur du stock détenu au-delà du besoin réel de couverture. En hausse = surstock qui s'aggrave (rouge), en baisse = surstock résorbé (vert).",
-        "help_total": "Valeur totale de l'inventaire. L'objectif étant de libérer le fonds de roulement, une baisse = moins de cash immobilisé (vert), une hausse = plus de capital figé (rouge). Une variation quasi nulle reste neutre (gris).",
-        "help_holding": "Coût annuel de possession du stock (financement, stockage, assurance, obsolescence). En hausse = plus de coût subi (rouge), en baisse = économies (vert).",
-        "help_turnover": "Nombre de fois où le stock est écoulé et renouvelé sur l'année. Plus c'est élevé, mieux le stock tourne. En hausse = meilleure rotation (vert), en baisse = stock qui dort (rouge).",
-        "help_recover": "Trésorerie que vous pourriez libérer en écoulant le stock dormant et excédentaire. C'est le gisement d'opportunité identifié : en hausse = plus de cash récupérable détecté (vert), en baisse = opportunité qui se réduit (rouge).",
-        "help_bfr": "Fonds de roulement immobilisé dans le stock (le cash « coincé » dans l'inventaire). En hausse = plus de cash bloqué (rouge), en baisse = cash libéré (vert).",
-        "help_otd": "Taux de commandes fournisseurs livrées à l'heure (On-Time Delivery). En hausse = fournisseurs plus fiables (vert), en baisse = dérive des délais (rouge).",
-        "help_coverage": "Nombre de jours de demande que le stock actuel permet de couvrir. En hausse = tendance au surstock (rouge), en baisse = stock plus tendu vers le juste besoin (vert).",
-        "help_stockout": "Nombre de références dont le stock risque de tomber sous le seuil de sécurité avant le prochain réapprovisionnement.",
+        "help_dead": "Références sans mouvement depuis trop longtemps : de la trésorerie figée. ↑ plus de cash bloqué (rouge) · ↓ cash libéré (vert).",
+        "help_excess": "Stock détenu au-delà du besoin réel. ↑ surstock qui s'aggrave (rouge) · ↓ surstock résorbé (vert).",
+        "help_total": "Valeur totale de l'inventaire. ↓ moins de capital immobilisé (vert) · ↑ plus de cash figé (rouge).",
+        "help_holding": "Coût annuel de possession du stock (financement, stockage, obsolescence). ↓ économies (vert) · ↑ plus de coût (rouge).",
+        "help_turnover": "Nombre de fois où le stock est renouvelé dans l'année. ↑ meilleure rotation (vert) · ↓ stock qui dort (rouge).",
+        "help_recover": "Trésorerie récupérable en écoulant le stock dormant et excédentaire. ↑ plus d'opportunité (vert) · ↓ opportunité réduite (rouge).",
+        "help_bfr": "Cash immobilisé dans le stock (fonds de roulement bloqué). ↓ cash libéré (vert) · ↑ plus de cash bloqué (rouge).",
+        "help_otd": "Part des commandes fournisseurs livrées à l'heure. ↑ fournisseurs plus fiables (vert) · ↓ délais qui dérivent (rouge).",
+        "help_coverage": "Jours de demande couverts par le stock actuel. ↓ stock plus tendu (vert) · ↑ tendance au surstock (rouge).",
+        "help_stockout": "Références risquant de passer sous le seuil de sécurité avant le prochain réappro.",
         "chart_dead_family": "Valeur du stock dormant par famille",
         "chart_type_mix": "Répartition par type d'article",
         "chart_abcxyz": "Matrice ABC × XYZ",
@@ -347,16 +347,16 @@ T_ALL = {
         "kpi_otd": "Supplier OTD",
         "kpi_coverage": "Avg coverage",
         "kpi_stockout": "Stockout-risk refs",
-        "help_dead": "Value of references with no movement for too long (threshold tuned per article type). This is cash frozen on the shelf. Rising = more cash locked up (red), falling = cash freed (green).",
-        "help_excess": "Value of stock held beyond real coverage needs. Rising = overstock getting worse (red), falling = overstock cleared (green).",
-        "help_total": "Total inventory value. Since the goal is to free up working capital, a drop = less cash tied up (green), a rise = more capital frozen (red). A near-flat change stays neutral (grey).",
-        "help_holding": "Annual cost of holding stock (financing, storage, insurance, obsolescence). Rising = more cost incurred (red), falling = savings (green).",
-        "help_turnover": "How many times stock is sold and replaced over the year. Higher is better. Rising = stock turns faster (green), falling = stock sitting idle (red).",
-        "help_recover": "Cash you could free up by clearing dead and excess stock. It is the identified opportunity: rising = more recoverable cash detected (green), falling = shrinking opportunity (red).",
-        "help_bfr": "Working capital tied up in inventory (the cash stuck in stock). Rising = more cash locked (red), falling = cash freed (green).",
-        "help_otd": "Share of supplier orders delivered on time (On-Time Delivery). Rising = more reliable suppliers (green), falling = slipping lead times (red).",
-        "help_coverage": "Number of days of demand the current stock can cover. Rising = drifting toward overstock (red), falling = leaner stock closer to true need (green).",
-        "help_stockout": "Number of references whose stock may drop below the safety threshold before the next replenishment.",
+        "help_dead": "References with no movement for too long — cash frozen on the shelf. ↑ more cash locked (red) · ↓ cash freed (green).",
+        "help_excess": "Stock held beyond real coverage needs. ↑ overstock worsening (red) · ↓ overstock cleared (green).",
+        "help_total": "Total inventory value. ↓ less capital tied up (green) · ↑ more cash frozen (red).",
+        "help_holding": "Annual cost of holding stock (financing, storage, obsolescence). ↓ savings (green) · ↑ more cost (red).",
+        "help_turnover": "How many times stock is renewed per year. ↑ turns faster (green) · ↓ sitting idle (red).",
+        "help_recover": "Cash you could free up by clearing dead and excess stock. ↑ more opportunity (green) · ↓ shrinking (red).",
+        "help_bfr": "Cash tied up in inventory (working capital locked). ↓ cash freed (green) · ↑ more cash locked (red).",
+        "help_otd": "Share of supplier orders delivered on time. ↑ more reliable (green) · ↓ slipping lead times (red).",
+        "help_coverage": "Days of demand the current stock covers. ↓ leaner stock (green) · ↑ drifting to overstock (red).",
+        "help_stockout": "References that may drop below the safety threshold before the next replenishment.",
         "chart_dead_family": "Dead stock value by family",
         "chart_type_mix": "Breakdown by article type",
         "chart_abcxyz": "ABC × XYZ matrix",
@@ -520,20 +520,25 @@ st.markdown("""
     .kpi-i:hover, .kpi-i:focus { background: #6355ff; color: #ffffff; border-color: #6355ff; }
     /* styled hover popover — replaces the native title tooltip */
     .kpi-tip {
-        position: absolute; top: calc(100% + 9px); right: -7px; width: 244px;
-        background: #0f172a; color: #e2e8f0;
+        position: absolute; top: calc(100% + 9px); right: -7px; width: 232px;
+        background: #ffffff; color: #475569;
+        border: 1px solid rgba(15,23,42,0.08);
         font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
-        font-size: 11.5px; font-weight: 500; font-style: normal; line-height: 1.5;
+        font-size: 11.5px; font-weight: 500; font-style: normal; line-height: 1.55;
         letter-spacing: normal; text-transform: none; text-align: left;
-        padding: 11px 13px; border-radius: 11px;
-        box-shadow: 0 14px 32px -10px rgba(15,23,42,0.55);
+        padding: 11px 13px; border-radius: 12px;
+        box-shadow: 0 12px 28px -14px rgba(15,23,42,0.28);
         opacity: 0; visibility: hidden; transform: translateY(-4px);
         transition: opacity .16s ease, transform .16s ease;
         z-index: 9999; pointer-events: none; white-space: normal;
     }
     .kpi-tip::before {
         content: ""; position: absolute; bottom: 100%; right: 11px;
-        border: 6px solid transparent; border-bottom-color: #0f172a;
+        border: 6px solid transparent; border-bottom-color: #ffffff;
+    }
+    .kpi-tip::after {
+        content: ""; position: absolute; bottom: calc(100% + 1px); right: 10px;
+        border: 7px solid transparent; border-bottom-color: rgba(15,23,42,0.08); z-index: -1;
     }
     .kpi-i:hover .kpi-tip, .kpi-i:focus .kpi-tip {
         opacity: 1; visibility: visible; transform: translateY(0);
