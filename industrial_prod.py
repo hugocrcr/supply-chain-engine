@@ -1620,7 +1620,7 @@ _page = st.radio("Navigation", PAGES, key=_navkey,
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1: EXECUTIVE DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
-if _page == PAGES[0]:
+if _page == LOG_PAGES[0]:
     st.markdown(f"""
     <div style="display:flex; align-items:flex-end; justify-content:space-between; margin:2px 0 18px;">
       <div>
@@ -1988,7 +1988,7 @@ if _page == PAGES[0]:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2: INVENTORY DETAIL
 # ══════════════════════════════════════════════════════════════════════════════
-if _page == PAGES[1]:
+if _page == LOG_PAGES[1]:
     inv_kpis = run_query("""
         SELECT
             COUNT(*) FILTER (WHERE is_dead_stock) AS dead_count,
@@ -2155,7 +2155,7 @@ if _page == PAGES[1]:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3: SUPPLIERS
 # ══════════════════════════════════════════════════════════════════════════════
-if _page == PAGES[2]:
+if _page == LOG_PAGES[2]:
     # ── Period selector — scoped to this tab, where it actually changes the data ──
     _hdr_l, _hdr_r = st.columns([3, 1])
     with _hdr_l:
@@ -2397,7 +2397,7 @@ if _page == PAGES[2]:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4: REORDER RECOMMENDATIONS
 # ══════════════════════════════════════════════════════════════════════════════
-if _page == PAGES[3]:
+if _page == LOG_PAGES[3]:
     reo_kpis = run_query("""
         SELECT
             COUNT(*) FILTER (WHERE is_stockout_risk) AS at_risk,
@@ -2520,7 +2520,7 @@ if _page == PAGES[3]:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 5: AI ASSISTANT
 # ══════════════════════════════════════════════════════════════════════════════
-if _page == PAGES[4]:
+if _page == LOG_PAGES[4]:
     st.subheader(T["ai_title"])
     st.caption(T["ai_caption"])
 
@@ -2636,7 +2636,7 @@ if _page == PAGES[4]:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6: DATA HEALTH
 # ══════════════════════════════════════════════════════════════════════════════
-if _page == PAGES[5]:
+if _page == LOG_PAGES[5]:
     st.subheader(T["health_title"])
     st.caption(T["health_caption"])
 
@@ -2787,7 +2787,7 @@ if _page == PAGES[5]:
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 7: PARAMETER DIAGNOSIS
 # ══════════════════════════════════════════════════════════════════════════════
-if _page == PAGES[6]:
+if _page == LOG_PAGES[6]:
     st.subheader(T["diag_title"])
     st.caption(T["diag_caption"])
 
