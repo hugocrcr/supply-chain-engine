@@ -1785,6 +1785,83 @@ def prod_compute():
     return s, mudas, k
 
 
+# ── PLAN D'ACTIONS : persistance en base (spec §3.5 / §4.4-5) ───────────────
+# Lecture par la connexion lecture seule ; écriture par un rôle DISTINCT limité
+# à prod_actions. Sans secrets d'écriture, l'écran reste consultable + export CSV.
+PROD_STATUTS_DB = ["a_lancer", "en_cours", "cloturee", "abandonnee"]
+PROD_STATUTS_UI = (["À lancer", "En cours", "Clôturée", "Abandonnée"] if _PF
+                   else ["To start", "In progress", "Closed", "Dropped"])
+_ST_UI2DB = dict(zip(PROD_STATUTS_UI, PROD_STATUTS_DB))
+_ST_DB2UI = dict(zip(PROD_STATUTS_DB, PROD_STATUTS_UI))
+
+
+def _prod_write_conn():
+    """Connexion d'écriture (rôle supplystack_actions). None si non configurée."""
+    try:
+        user = st.secrets.get("supabase_actions_user", "")
+        pwd = st.secrets.get("supabase_actions_password", "")
+    except Exception:
+        user = pwd = ""
+    if not user or not pwd:
+        return None
+    cfg = dict(DB_CONFIG)
+    cfg["user"], cfg["password"] = user, pwd
+    conn = psycopg2.connect(**cfg)
+    conn.autocommit = False          # transaction explicite : tout ou rien
+    return conn
+
+
+def prod_actions_writable():
+    return bool(st.secrets.get("supabase_actions_user", "")) if hasattr(st, "secrets") else False
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def prod_actions_load():
+    """Plan d'actions depuis la base. None si la table est absente."""
+    return _prod_read("SELECT action_id, libelle, poste_id, type_muda, cause_code, "
+                      "potentiel_accessible, objectif_retenu, gain_constate, responsable, "
+                      "echeance, statut, date_constat FROM prod_actions ORDER BY action_id")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _prod_poste_map():
+    """poste -> poste_id (et l'inverse) pour traduire l'affichage en clés."""
+    df = _prod_read("SELECT poste_id, poste FROM prod_postes ORDER BY poste_id")
+    if df is None or df.empty:
+        return {}, {}
+    return (dict(zip(df["poste"], df["poste_id"])), dict(zip(df["poste_id"], df["poste"])))
+
+
+def prod_actions_save(rows):
+    """Remplace le plan en base, dans UNE transaction (rien de partiel).
+    rows : liste de dicts aux clés des colonnes de prod_actions."""
+    conn = _prod_write_conn()
+    if conn is None:
+        return False, ("Écriture non configurée : ajoutez supabase_actions_user / "
+                       "supabase_actions_password dans les secrets." if _PF else
+                       "Write not configured: add supabase_actions_user / "
+                       "supabase_actions_password to the secrets.")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM prod_actions")
+            for r in rows:
+                cur.execute(
+                    "INSERT INTO prod_actions (libelle, poste_id, type_muda, cause_code, "
+                    "potentiel_accessible, objectif_retenu, gain_constate, responsable, "
+                    "echeance, statut, date_constat) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (r["libelle"], r["poste_id"], r["type_muda"], r["cause_code"],
+                     r["potentiel_accessible"], r["objectif_retenu"], r["gain_constate"],
+                     r["responsable"], r["echeance"], r["statut"], r["date_constat"]))
+        conn.commit()
+        return True, None
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally:
+        conn.close()
+
+
 def prod_aggregate(level):
     """TRS pondéré multi-niveaux (spec 2.2) : usine → atelier → ligne → poste.
     Toujours agrégé sur les temps sous-jacents, jamais moyenne de ratios."""
@@ -4142,54 +4219,131 @@ if _page == P_ACTIONS:
     cRe = ("Responsable" if _PF else "Owner"); cEc = ("Échéance" if _PF else "Due")
     cSt = ("Statut" if _PF else "Status"); cGa = ("Gain constaté" if _PF else "Measured gain")
     cDc = ("Date de constat" if _PF else "Measured on")
-    _statuts = (["À lancer", "En cours", "Clôturée", "Abandonnée"] if _PF
-                else ["To start", "In progress", "Closed", "Dropped"])
+    _statuts = PROD_STATUTS_UI
+    _muda_ui2key = dict(zip(mudas["muda"], mudas["key"]))
+    _muda_key2ui = dict(zip(mudas["key"], mudas["muda"]))
+    _poste2id, _id2poste = _prod_poste_map()
 
-    if "prod_actions" not in st.session_state:
-        st.session_state["prod_actions"] = pd.DataFrame([
-            {cAc: "Chantier SMED Tournage (40 → 20 min)", cPo: "Tournage", cMu: ("Attente" if _PF else "Waiting"),
-             cCa: "changement_serie", cPot: 21000.0, cObj: 14000.0, cRe: "D. Soury", cEc: "2026-11-30",
-             cSt: _statuts[1], cGa: None, cDc: None},
-            {cAc: ("Passage Assemblage en 2 équipes" if _PF else "Assembly to 2 shifts"), cPo: "Assemblage",
-             cMu: ("Attente" if _PF else "Waiting"), cCa: "goulot_charge", cPot: 38000.0, cObj: 25000.0,
-             cRe: "Resp. production", cEc: "2026-12-15", cSt: _statuts[0], cGa: None, cDc: None},
-            {cAc: ("Maintenance préventive broche Fraisage" if _PF else "Milling spindle preventive maintenance"),
-             cPo: "Fraisage", cMu: ("Attente" if _PF else "Waiting"), cCa: "panne", cPot: 16000.0, cObj: 11000.0,
-             cRe: "Maintenance", cEc: "2026-10-31", cSt: _statuts[1], cGa: None, cDc: None},
-            {cAc: ("Réduction rebut Tournage (outil + matière)" if _PF else "Turning scrap reduction"),
-             cPo: "Tournage", cMu: ("Défauts" if _PF else "Defects"), cCa: "usure_outil", cPot: 45000.0,
-             cObj: 30000.0, cRe: "Qualité", cEc: "2027-01-31", cSt: _statuts[0], cGa: None, cDc: None},
-            {cAc: ("Codification des causes d'arrêt" if _PF else "Downtime cause coding"), cPo: "—",
-             cMu: ("Attente" if _PF else "Waiting"), cCa: "—", cPot: None, cObj: None, cRe: "Hugo / SupplyStack",
-             cEc: "2026-10-15", cSt: _statuts[1], cGa: None, cDc: None},
-        ])
+    _db = prod_actions_load()
+    _from_db = _db is not None
+    _EMPTY = pd.DataFrame(columns=[cAc, cPo, cMu, cCa, cPot, cObj, cRe, cEc, cSt, cGa, cDc])
+
+    if _from_db:
+        # Base -> affichage : les clés techniques deviennent des libellés lisibles.
+        view_df = pd.DataFrame({
+            cAc: _db["libelle"],
+            cPo: _db["poste_id"].map(lambda v: _id2poste.get(v, "—") if pd.notna(v) else "—"),
+            cMu: _db["type_muda"].map(lambda v: _muda_key2ui.get(v, v if pd.notna(v) else "")),
+            cCa: _db["cause_code"].fillna(""),
+            cPot: pd.to_numeric(_db["potentiel_accessible"], errors="coerce"),
+            cObj: pd.to_numeric(_db["objectif_retenu"], errors="coerce"),
+            cRe: _db["responsable"].fillna(""),
+            cEc: pd.to_datetime(_db["echeance"], errors="coerce"),
+            cSt: _db["statut"].map(lambda v: _ST_DB2UI.get(v, _statuts[0])),
+            cGa: pd.to_numeric(_db["gain_constate"], errors="coerce"),
+            cDc: pd.to_datetime(_db["date_constat"], errors="coerce"),
+        })
+        _src_txt, _src_col = ((f"{len(view_df)} action(s) en base" if _PF
+                               else f"{len(view_df)} action(s) in database"), "#12b76a")
+    else:
+        # R6 : pas de table -> plan de travail local, non persistant, dit clairement.
+        if "prod_actions_local" not in st.session_state:
+            st.session_state["prod_actions_local"] = _EMPTY.copy()
+        view_df = st.session_state["prod_actions_local"]
+        _src_txt, _src_col = (("Tables prod_* absentes — saisie locale non conservée" if _PF
+                               else "prod_* tables absent — local entry, not persisted"), "#94a3b8")
+
+    _wr = prod_actions_writable()
+    _readonly = _from_db and not _wr      # base sans secrets d'écriture -> consultation
+    _mode = (("écriture activée" if _PF else "write enabled") if (_from_db and _wr)
+             else ("lecture seule" if _PF else "read-only"))
+    st.markdown(f'<div style="font-size:11.5px;color:{_src_col};margin:-4px 0 10px;">'
+                f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;'
+                f'background:{_src_col};margin-right:6px;"></span>{_src_txt} · {_mode}</div>',
+                unsafe_allow_html=True)
 
     edited = st.data_editor(
-        st.session_state["prod_actions"], num_rows="dynamic", use_container_width=True, key="prod_actions_editor",
+        view_df, num_rows="dynamic", use_container_width=True, key="prod_actions_editor",
+        disabled=_readonly,
         column_config={
+            cAc: st.column_config.TextColumn(cAc, width="large", required=True),
             cSt: st.column_config.SelectboxColumn(cSt, options=_statuts),
             cPo: st.column_config.SelectboxColumn(cPo, options=["—"] + list(s["step_name"])),
             cMu: st.column_config.SelectboxColumn(cMu, options=list(mudas["muda"])),
             cPot: st.column_config.NumberColumn(cPot, format="%.0f €"),
             cObj: st.column_config.NumberColumn(cObj, format="%.0f €"),
             cGa: st.column_config.NumberColumn(cGa, format="%.0f €"),
+            cEc: st.column_config.DateColumn(cEc, format="DD/MM/YYYY"),
+            cDc: st.column_config.DateColumn(cDc, format="DD/MM/YYYY"),
         })
-    st.session_state["prod_actions"] = edited
+    if not _from_db:
+        st.session_state["prod_actions_local"] = edited
 
+    # ── Enregistrement en base ──────────────────────────────────────────────
+    bcol1, bcol2, _bsp = st.columns([1.4, 1.4, 3])
+    with bcol1:
+        _save = st.button(("💾 Enregistrer en base" if _PF else "💾 Save to database"),
+                          use_container_width=True, disabled=not (_from_db and _wr))
+    with bcol2:
+        st.download_button(("⬇️ Exporter (CSV)" if _PF else "⬇️ Export (CSV)"),
+                           data=edited.to_csv(index=False).encode("utf-8-sig"),
+                           file_name="plan_actions_production.csv", mime="text/csv",
+                           use_container_width=True)
+
+    if _save:
+        _rows, _bad = [], False
+        for _, r in edited.iterrows():
+            lib = str(r[cAc] or "").strip()
+            if not lib:
+                _bad = True
+                continue
+            _num = lambda v: (None if pd.isna(v) else float(v))
+            _dat = lambda v: (None if pd.isna(v) else pd.to_datetime(v).date())
+            _rows.append(dict(
+                libelle=lib,
+                poste_id=_poste2id.get(str(r[cPo]), None),
+                type_muda=_muda_ui2key.get(str(r[cMu]), None),
+                cause_code=(str(r[cCa]).strip() or None),
+                potentiel_accessible=_num(r[cPot]), objectif_retenu=_num(r[cObj]),
+                gain_constate=_num(r[cGa]),
+                responsable=(str(r[cRe]).strip() or None),
+                echeance=_dat(r[cEc]), statut=_ST_UI2DB.get(str(r[cSt]), "a_lancer"),
+                date_constat=_dat(r[cDc])))
+        okw, err = prod_actions_save(_rows)
+        if okw:
+            prod_actions_load.clear()
+            msg = (f"✅ {len(_rows)} action(s) enregistrée(s)." if _PF
+                   else f"✅ {len(_rows)} action(s) saved.")
+            if _bad:
+                msg += (" Lignes sans libellé ignorées." if _PF else " Rows without a label were skipped.")
+            alert_box("success", msg)
+            st.rerun()
+        else:
+            alert_box("error", ("❌ Échec de l'enregistrement : " if _PF else "❌ Save failed: ") + _esc(str(err)))
+
+    if _from_db and not _wr:
+        st.caption(("Édition en base désactivée : ajoutez supabase_actions_user et "
+                    "supabase_actions_password dans les secrets Streamlit (rôle créé par "
+                    "la partie 8 de production_backend_v2.sql)." if _PF else
+                    "Database editing disabled: add supabase_actions_user and "
+                    "supabase_actions_password to the Streamlit secrets (role created by "
+                    "part 8 of production_backend_v2.sql)."))
+
+    # ── Filtres + indicateurs de tenue du plan ──────────────────────────────
     fc1, fc2, fc3 = st.columns(3)
     with fc1:
         fst = st.multiselect(cSt, _statuts, default=[], key="fa_st")
     with fc2:
-        fre = st.multiselect(cRe, sorted(x for x in edited[cRe].dropna().unique()), default=[], key="fa_re")
+        fre = st.multiselect(cRe, sorted(str(x) for x in edited[cRe].dropna().unique() if str(x).strip()), default=[], key="fa_re")
     with fc3:
-        fpo = st.multiselect(cPo, sorted(x for x in edited[cPo].dropna().unique()), default=[], key="fa_po")
+        fpo = st.multiselect(cPo, sorted(str(x) for x in edited[cPo].dropna().unique() if str(x).strip()), default=[], key="fa_po")
     view = edited.copy()
     if fst:
         view = view[view[cSt].isin(fst)]
     if fre:
-        view = view[view[cRe].isin(fre)]
+        view = view[view[cRe].astype(str).isin(fre)]
     if fpo:
-        view = view[view[cPo].isin(fpo)]
+        view = view[view[cPo].astype(str).isin(fpo)]
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
@@ -4205,13 +4359,12 @@ if _page == P_ACTIONS:
                   else "Sum of committed targets — the promise made with the client.")), unsafe_allow_html=True)
     with m4:
         _gain_sum = pd.to_numeric(view[cGa], errors="coerce").fillna(0).sum()
+        _taux = (_gain_sum / _obj_sum * 100) if _obj_sum else 0
         st.markdown(kpi_card(cGa, format_currency(_gain_sum), "kpi-success",
-            info=("Se remplit au constat des campagnes suivantes." if _PF
-                  else "Filled as the next campaigns are measured.")), unsafe_allow_html=True)
-
-    st.download_button(("⬇️ Exporter le plan (CSV)" if _PF else "⬇️ Export plan (CSV)"),
-                       data=edited.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="plan_actions_production.csv", mime="text/csv")
+            delta=(f"{_taux:.0f} % " + ("de l'objectif" if _PF else "of target")) if _obj_sum else "",
+            delta_color="#12b76a",
+            info=("Se remplit au constat des campagnes suivantes — c'est le taux de réalisation du plan." if _PF
+                  else "Filled as the next campaigns are measured — this is the plan's realisation rate.")), unsafe_allow_html=True)
 
 
 if _page == P_AI:
