@@ -36,6 +36,18 @@ CLIENT_NAME = "MECAPRO Industries"
 CLIENT_INITIALS = "MI"
 CURRENCY = "€"
 
+# ── PARAMÈTRES DE VALORISATION — à calibrer par client à l'installation ──────
+# R5 : tout coefficient de valorisation est un paramètre, jamais une constante
+# en dur. Valeurs par défaut ci-dessous, recalibrées client par client.
+COUT_HORAIRE_MO          = 38.0   # € / h, main-d'œuvre chargée
+COUT_HORAIRE_MACHINE     = 45.0   # € / h, poste standard (surchargeable par poste)
+TAUX_ABSORPTION_DEMANDE  = 0.60   # part de la capacité libérée réellement vendable
+TAUX_POSSESSION_ANNUEL   = 0.18   # coût de portage du capital immobilisé
+JOURS_OUVRES_AN          = 220
+HEURES_OUVERTURE_JOUR    = 15.0   # 2 équipes
+PART_SURTRAITEMENT_NONVA = 0.25   # part du temps hors VA comptée en sur-traitement
+TAUX_ARRETS_PLANIFIES    = 0.05   # part d'ouverture en arrêts planifiés (requis = ouverture × (1 − taux))
+
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title=f"SupplyStack — {CLIENT_NAME}",
@@ -1438,138 +1450,310 @@ else:
 #   2. st.tabs renders every tab body on every run — all seven sets of queries
 #      fired to display one screen. Here only the selected page executes.
 # ══════════════════════════════════════════════════════════════════════════════
-# PRODUCTION MODULE — quantification des gaspillages industriels (DÉMONSTRATION)
+# PRODUCTION MODULE — impact économique des gaspillages industriels
 #
-# La production n'existe pas encore en base Supabase : ce volet est un outil de
-# modélisation/visualisation alimenté par un jeu de démonstration en mémoire.
-# Il ne lit pas la base et n'écrit rien. Il reproduit le rendu de la version
-# définitive décrite dans spec_module_production.md.
+# Règles de conception (spec build v1.0) :
+#   R1  aucun euro stocké : montant = quantité physique × règle de valorisation
+#   R2  aucun TRS stocké : D, P, Q agrégés sur les temps, TRS toujours calculé
+#   R3  un événement → exactement une nature économique
+#   R4  les trois natures ne s'additionnent jamais dans un même indicateur
+#   R5  tout coefficient de valorisation est un paramètre (bloc config en tête)
+#   R6  écran sans données = message d'indisponibilité, jamais zéros ni erreur
+#
+# Source actuelle : jeu de démonstration en dur (MECAPRO). Le câblage Supabase
+# (schéma prod_* v2) remplacera ces dictionnaires un onglet à la fois.
 # ══════════════════════════════════════════════════════════════════════════════
 _PF = (CLIENT_LANG == "fr")
 
-P_SYNTH = "📊 " + ("Synthèse production" if _PF else "Production overview")
-P_FLOW  = "🗺️ " + ("Cartographie de flux" if _PF else "Flow map")
-P_MUDA  = "🗑️ " + ("Les sept mudas" if _PF else "The seven wastes")
-P_POSTE = "🏭 " + ("Détail par poste" if _PF else "By workstation")
-P_SUIVI = "📈 " + ("Suivi" if _PF else "Tracking")
-PROD_PAGES = [P_SYNTH, P_FLOW, P_MUDA, P_POSTE, P_SUIVI]
+P_SYNTH   = "📊 " + ("Synthèse production" if _PF else "Production overview")
+P_FLOW    = "🗺️ " + ("Cartographie de flux" if _PF else "Flow map")
+P_MUDA    = "🗑️ " + ("Les huit mudas" if _PF else "The eight wastes")
+P_POSTE   = "🏭 " + ("Détail par poste" if _PF else "By workstation")
+P_ACTIONS = "📋 " + ("Plan d'actions" if _PF else "Action plan")
+P_SUIVI   = "📈 " + ("Suivi" if _PF else "Tracking")
+PROD_PAGES = [P_SYNTH, P_FLOW, P_MUDA, P_POSTE, P_ACTIONS, P_SUIVI]
 
-N_CONST = ("Coût constaté" if _PF else "Booked cost")
-N_CAPA  = ("Capacité perdue" if _PF else "Lost capacity")
-N_TRESO = ("Trésorerie immobilisée" if _PF else "Cash tied up")
-PROD_NATURE_COLOR = {N_CONST: "#e5484d", N_CAPA: "#f79009", N_TRESO: "#6355ff"}
+# ── Les trois natures économiques (R3/R4) — jamais combinées ─────────────────
+N_CONST = ("Pertes économiques constatées" if _PF else "Booked economic losses")
+N_CAPA  = ("Capacité valorisée non exploitée" if _PF else "Unexploited valued capacity")
+N_CAPI  = ("Capital immobilisé" if _PF else "Capital tied up")
+PROD_NATURE_COLOR = {N_CONST: "#e5484d", N_CAPA: "#f79009", N_CAPI: "#6355ff"}
 
-PROD_SITE = {"hours_per_day": 15.0, "days_per_year": 220, "shifts": 2,
-             "labour_load": 1.45, "capital_cost": 0.10, "overprod_rate": 0.05}
+st.markdown("""
+<style>
+    .kpi-capital .kpi-dot { background: #6355ff; } .kpi-capital .kpi-value { color: #6355ff; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Paramètres de la campagne de mesure (relevés terrain, pas des coefficients)
+PROD_CAMPAGNE = {
+    "campagne": "T1",
+    "demande_client_jour": 191,      # pièces / jour
+    "production_reelle_jour": 178,   # pièces / jour constatées
+    "otif_client": 0.932,            # OTIF client mesuré
+    "taux_surproduction": 0.05,      # estimation terrain (part produite au-delà de la demande)
+    "heures_competences_an": 640.0,  # heures qualifiées sur tâches sans valeur (déclaratif)
+}
 
 
 @st.cache_data(show_spinner=False)
 def prod_demo():
+    """Relevés terrain de démonstration — ligne Carter aluminium, 9 postes.
+    Les temps annuels (requis, fonctionnement) sont dérivés des taux observés
+    pour rester cohérents avec R2 : les ratios affichés sont recalculés depuis
+    les temps, jamais stockés."""
     families = pd.DataFrame([
         {"product_family": "Carter aluminium", "standard_cost": 85, "material_cost": 32,
          "annual_volume": 42000, "sale_price": 140},
     ])
     steps = pd.DataFrame([
-        (1, "Débit / Sciage",   "Découpe",       "Carter aluminium", 45, 20, 25, 200, 45, .02,  .01, .82, .88, 1,   35, 32,  8,  6),
-        (2, "Tournage",         "Usinage",       "Carter aluminium", 120, 75, 40, 150, 40, .03,  .02, .75, .84, 1,   55, 34,  6,  8),
-        (3, "Fraisage",         "Usinage",       "Carter aluminium", 95, 60, 45, 150, 45, .025, .03, .78, .86, 1,   60, 34,  6,  7),
-        (4, "Perçage",          "Usinage",       "Carter aluminium", 40, 28, 20, 150, 30, .015, .01, .85, .90, 1,   30, 32,  5,  5),
-        (5, "Ébavurage",        "Parachèvement", "Carter aluminium", 60, 22, 10, 100, 40, .01,  .04, .90, .80, 2,    8, 30, 10, 14),
-        (6, "Lavage",           "Parachèvement", "Carter aluminium", 35, 15,  8, 300, 30, .005, .0,  .93, .88, 0.5, 20, 30,  6,  5),
-        (7, "Contrôle",         "Contrôle",      "Carter aluminium", 50, 10,  5,  50, 25, .0,   .05, .95, .82, 1,    5, 33,  4,  6),
-        (8, "Assemblage",       "Assemblage",    "Carter aluminium", 140, 95, 15,  80, 55, .02,  .03, .88, .85, 2,   12, 32,  8, 12),
-        (9, "Conditionnement",  "Expédition",    "Carter aluminium", 30, 12,  5, 500, 20, .002, .0,  .96, .90, 1,    6, 29, 12,  8),
+        # ordre, poste, atelier, famille, cyc_nominal_s, va_s, chg_min, lot, wip, scrap, rework, D, P, ops, mach€/h, mo€/h, transp_s, motion_s, nb_mach, ouv_h/j
+        (1, "Débit / Sciage",  "Découpe",       "Carter aluminium",  45, 20, 25, 200, 45, .02,  .01, .82, .88, 1,   35, 32,  8,  6, 1, 8.0),
+        (2, "Tournage",        "Usinage",       "Carter aluminium", 120, 75, 40, 150, 40, .03,  .02, .75, .84, 1,   55, 34,  6,  8, 2, 8.0),
+        (3, "Fraisage",        "Usinage",       "Carter aluminium",  95, 60, 45, 150, 45, .025, .03, .78, .86, 1,   60, 34,  6,  7, 1, 8.0),
+        (4, "Perçage",         "Usinage",       "Carter aluminium",  40, 28, 20, 150, 30, .015, .01, .85, .90, 1,   30, 32,  5,  5, 1, 8.0),
+        (5, "Ébavurage",       "Parachèvement", "Carter aluminium",  60, 22, 10, 100, 40, .01,  .04, .90, .80, 2,    8, 30, 10, 14, 1, 8.0),
+        (6, "Lavage",          "Parachèvement", "Carter aluminium",  35, 15,  8, 300, 30, .005, .0,  .93, .88, 0.5, 20, 30,  6,  5, 1, 8.0),
+        (7, "Contrôle",        "Contrôle",      "Carter aluminium",  50, 10,  5,  50, 25, .0,   .05, .95, .82, 1,    5, 33,  4,  6, 1, 8.0),
+        (8, "Assemblage",      "Assemblage",    "Carter aluminium", 140, 95, 15,  80, 55, .02,  .03, .88, .85, 2,   12, 32,  8, 12, 1, 8.0),
+        (9, "Conditionnement", "Expédition",    "Carter aluminium",  30, 12,  5, 500, 20, .002, .0,  .96, .90, 1,    6, 29, 12,  8, 1, 8.0),
     ], columns=["step_order", "step_name", "workshop", "product_family", "cycle_time_sec",
                 "value_added_sec", "changeover_min", "batch_size", "wip_units", "scrap_rate",
                 "rework_rate", "availability_rate", "performance_rate", "operators",
-                "machine_hourly_cost", "labour_hourly_cost", "transport_sec", "motion_sec"])
+                "machine_hourly_cost", "labour_hourly_cost", "transport_sec", "motion_sec",
+                "nb_machines", "ouverture_h_jour"])
+    steps["ligne"] = "Ligne Carter"
     return steps, families
 
 
 @st.cache_data(show_spinner=False)
 def prod_compute():
+    """Modèle complet : temps → ratios (R2), quantités physiques → euros (R1),
+    une nature par muda (R3), aucun total inter-natures (R4)."""
     steps, fams = prod_demo()
-    s = steps.merge(fams[["product_family", "standard_cost", "material_cost", "annual_volume", "sale_price"]],
-                    on="product_family", how="left").sort_values("step_order").reset_index(drop=True)
+    s = steps.merge(fams, on="product_family", how="left").sort_values("step_order").reset_index(drop=True)
     vol, sc, mat = s["annual_volume"], s["standard_cost"], s["material_cost"]
+    D, P = s["availability_rate"], s["performance_rate"]
     ops, lab, mach = s["operators"], s["labour_hourly_cost"], s["machine_hourly_cost"]
-    cc = PROD_SITE["capital_cost"]
     poste_h = mach + lab * ops
     s["poste_hourly"] = poste_h
+
+    # ── Quantités & temps annuels (base physique, R1/R2) ────────────────────
     s["quality_rate"] = (1 - s["scrap_rate"]) * (1 - s["rework_rate"])
-    s["trs"] = s["availability_rate"] * s["performance_rate"] * s["quality_rate"]
-    s["eff_cycle"] = s["cycle_time_sec"] / (s["availability_rate"] * s["performance_rate"])
-    run_h = vol * s["cycle_time_sec"] / 3600.0
-    downtime_h = run_h * (1 - s["availability_rate"]) / s["availability_rate"]
-    # scrap valued at cost ACCUMULATED to the step (material + share of conversion) — not full standard cost
-    tot_va = s["value_added_sec"].sum()
-    cost_at_step = mat + (s["value_added_sec"].cumsum() / tot_va) * (sc - mat)
-    s["m_defauts"] = vol * s["scrap_rate"] * cost_at_step + vol * s["rework_rate"] * (s["value_added_sec"] / 3600.0) * lab * ops
-    s["m_attente"] = downtime_h * poste_h
-    s["m_transport"] = vol * s["transport_sec"] / 3600.0 * lab * ops
+    s["pieces_bonnes"] = vol.astype(float)
+    s["pieces_produites"] = vol / s["quality_rate"]
+    s["temps_fonctionnement_h"] = s["pieces_produites"] * s["cycle_time_sec"] / P / 3600.0
+    s["temps_requis_h"] = s["temps_fonctionnement_h"] / D
+    s["temps_ouverture_h"] = s["temps_requis_h"] / (1 - TAUX_ARRETS_PLANIFIES)
+    s["trs"] = D * P * s["quality_rate"]
+    s["eff_cycle"] = s["cycle_time_sec"] / (D * P)          # cycle effectif complet (affichage)
+    s["cycle_perf"] = s["cycle_time_sec"] / P               # cycle dégradé performance (capacité)
+
+    # ── Goulot par taux de charge (spec 2.4) ────────────────────────────────
+    demande = float(PROD_CAMPAGNE["demande_client_jour"])
+    s["capacite_nette_jour"] = (s["ouverture_h_jour"] * 3600.0 * s["nb_machines"] * D) / s["cycle_perf"]
+    s["taux_charge"] = demande / s["capacite_nette_jour"]
+
+    # ── Quantités physiques par muda ────────────────────────────────────────
+    s["rebut_pcs"] = s["pieces_produites"] * s["scrap_rate"]
+    s["retouche_pcs"] = s["pieces_produites"] * s["rework_rate"]
+    s["rework_h"] = s["retouche_pcs"] * s["value_added_sec"] / 3600.0
+    s["downtime_h"] = s["temps_requis_h"] - s["temps_fonctionnement_h"]
+    s["transport_h"] = s["pieces_produites"] * s["transport_sec"] / 3600.0
+    s["motion_h"] = s["pieces_produites"] * s["motion_sec"] / 3600.0
     nonva = (s["cycle_time_sec"] - s["value_added_sec"]).clip(lower=0)
-    s["m_surtraitement"] = vol * (0.25 * nonva) / 3600.0 * poste_h
-    s["m_mouvements"] = vol * s["motion_sec"] / 3600.0 * lab * ops
+    s["surtraitement_h"] = s["pieces_produites"] * (PART_SURTRAITEMENT_NONVA * nonva) / 3600.0
     s["wip_value"] = s["wip_units"] * sc
-    s["m_stocks"] = s["wip_value"] * cc
-    setups = vol / s["batch_size"]
-    s["smed_potential"] = 0.5 * (setups * s["changeover_min"] / 60.0) * poste_h
+
+    # ── Valorisation (R1, coefficients R5) ──────────────────────────────────
+    tot_va = s["value_added_sec"].sum()
+    s["cost_at_step"] = mat + (s["value_added_sec"].cumsum() / tot_va) * (sc - mat)
+    ABS = TAUX_ABSORPTION_DEMANDE
+    # constaté : décaissements réels — matière au coût cumulé + heures de retouche payées
+    s["m_defauts"] = s["rebut_pcs"] * s["cost_at_step"] + s["rework_h"] * lab * ops
+    # capacité : heures × coût horaire × absorption (garde-fou central)
+    s["m_attente"] = s["downtime_h"] * poste_h * ABS
+    s["m_transport"] = s["transport_h"] * lab * ops * ABS
+    s["m_surtraitement"] = s["surtraitement_h"] * poste_h * ABS
+    s["m_mouvements"] = s["motion_h"] * lab * ops * ABS
     s["m_capacite"] = s[["m_attente", "m_transport", "m_surtraitement", "m_mouvements"]].sum(axis=1)
-    s["m_total"] = s["m_defauts"] + s["m_capacite"] + s["m_stocks"]
+    # capital : valeur immobilisée × taux de possession
+    s["m_stocks"] = s["wip_value"] * TAUX_POSSESSION_ANNUEL
 
-    surprod = float(fams.iloc[0]["annual_volume"] * PROD_SITE["overprod_rate"] * fams.iloc[0]["standard_cost"] * cc)
-    constate = float(s["m_defauts"].sum())
-    capacite = float(s["m_capacite"].sum())
-    treso = float(s["m_stocks"].sum() + surprod)
-    total = constate + capacite + treso
-    va = float(s["value_added_sec"].sum())
-    lead_sec = float((s["cycle_time_sec"] * (1 + s["wip_units"])).sum())
-    flow_eff = (va / lead_sec) if lead_sec else 0.0
-    lead_days = lead_sec / 3600.0 / PROD_SITE["hours_per_day"]
-    bi = s["eff_cycle"].idxmax()
+    # ── Grandeurs de ligne (jamais par poste) ───────────────────────────────
+    fam0 = fams.iloc[0]
+    surprod_units = float(fam0["annual_volume"]) * PROD_CAMPAGNE["taux_surproduction"]
+    m_surprod = surprod_units * float(fam0["standard_cost"]) * TAUX_POSSESSION_ANNUEL
+    comp_h = PROD_CAMPAGNE["heures_competences_an"]
+    m_comp = comp_h * COUT_HORAIRE_MO * ABS
 
+    # ── TRS pondéré ligne (spec 2.2 : agréger les temps, pas les ratios) ────
+    d_l = s["temps_fonctionnement_h"].sum() / s["temps_requis_h"].sum()
+    p_l = (s["pieces_produites"] * s["cycle_time_sec"]).sum() / 3600.0 / s["temps_fonctionnement_h"].sum()
+    q_l = s["pieces_bonnes"].sum() / s["pieces_produites"].sum()
+    trs_l = d_l * p_l * q_l
+
+    # ── SMED (potentiel par poste, valorisé dans le simulateur) ─────────────
+    s["nb_changements_an"] = vol / s["batch_size"]
+    s["smed_h_50"] = 0.5 * s["nb_changements_an"] * s["changeover_min"] / 60.0
+
+    # ── Flux ────────────────────────────────────────────────────────────────
+    va_s_piece = float(s["value_added_sec"].sum())
+    lead_s_piece = float((s["cycle_time_sec"] * (1 + s["wip_units"])).sum())
+    flow_eff = va_s_piece / lead_s_piece if lead_s_piece else 0.0
+    lead_h = lead_s_piece / 3600.0
+    lead_days = lead_h / HEURES_OUVERTURE_JOUR
+    takt_s = HEURES_OUVERTURE_JOUR * 3600.0 / demande
+
+    bi = s["taux_charge"].idxmax()
+
+    # ── Les huit mudas : quantité physique | unité | heures | € | nature ────
+    F = (lambda a, b: a if _PF else b)
     mudas = pd.DataFrame([
-        (("Défauts" if _PF else "Defects"),               float(s["m_defauts"].sum()),       N_CONST),
-        (("Attente" if _PF else "Waiting"),               float(s["m_attente"].sum()),       N_CAPA),
-        (("Transport" if _PF else "Transport"),           float(s["m_transport"].sum()),     N_CAPA),
-        (("Sur-traitement" if _PF else "Over-processing"), float(s["m_surtraitement"].sum()), N_CAPA),
-        (("Mouvements" if _PF else "Motion"),             float(s["m_mouvements"].sum()),    N_CAPA),
-        (("Stocks / encours" if _PF else "Inventory / WIP"), float(s["m_stocks"].sum()),     N_TRESO),
-        (("Surproduction" if _PF else "Overproduction"),  surprod,                           N_TRESO),
-    ], columns=["muda", "value", "nature"]).sort_values("value", ascending=False).reset_index(drop=True)
+        dict(key="defauts", muda=F("Défauts", "Defects"),
+             qty=s["rebut_pcs"].sum() + s["retouche_pcs"].sum(),
+             qty_label=f"{s['rebut_pcs'].sum():,.0f} " + F("rebuts + ", "scrapped + ") + f"{s['retouche_pcs'].sum():,.0f} " + F("retouches", "reworked"),
+             unite=F("pièces", "pieces"), occurrences=496, heures=s["rework_h"].sum(),
+             value=s["m_defauts"].sum(), nature=N_CONST),
+        dict(key="attente", muda=F("Attente", "Waiting"),
+             qty=s["downtime_h"].sum(), qty_label=f"{s['downtime_h'].sum():,.0f} h",
+             unite=F("heures", "hours"), occurrences=850, heures=s["downtime_h"].sum(),
+             value=s["m_attente"].sum(), nature=N_CAPA),
+        dict(key="sur_traitement", muda=F("Sur-traitement", "Over-processing"),
+             qty=s["surtraitement_h"].sum(), qty_label=f"{s['surtraitement_h'].sum():,.0f} h",
+             unite=F("heures", "hours"), occurrences=3100, heures=s["surtraitement_h"].sum(),
+             value=s["m_surtraitement"].sum(), nature=N_CAPA),
+        dict(key="mouvements", muda=F("Mouvements", "Motion"),
+             qty=s["motion_h"].sum(), qty_label=f"{s['motion_h'].sum():,.0f} h",
+             unite=F("heures", "hours"), occurrences=12500, heures=s["motion_h"].sum(),
+             value=s["m_mouvements"].sum(), nature=N_CAPA),
+        dict(key="transport", muda=F("Transport", "Transport"),
+             qty=s["transport_h"].sum(), qty_label=f"{s['transport_h'].sum():,.0f} h",
+             unite=F("heures", "hours"), occurrences=2400, heures=s["transport_h"].sum(),
+             value=s["m_transport"].sum(), nature=N_CAPA),
+        dict(key="competences", muda=F("Sous-utilisation des compétences", "Skill under-use"),
+             qty=comp_h, qty_label=f"{comp_h:,.0f} h",
+             unite=F("heures", "hours"), occurrences=210, heures=comp_h,
+             value=m_comp, nature=N_CAPA),
+        dict(key="stocks_encours", muda=F("Stocks / encours", "Inventory / WIP"),
+             qty=s["wip_units"].sum(), qty_label=f"{s['wip_units'].sum():,.0f} " + F("unités", "units"),
+             unite=F("unités", "units"), occurrences=8, heures=0.0,
+             value=s["m_stocks"].sum(), nature=N_CAPI),
+        dict(key="surproduction", muda=F("Surproduction", "Overproduction"),
+             qty=surprod_units, qty_label=f"{surprod_units:,.0f} " + F("unités", "units"),
+             unite=F("unités", "units"), occurrences=14, heures=0.0,
+             value=m_surprod, nature=N_CAPI),
+    ])
 
-    k = dict(constate=constate, capacite=capacite, treso=treso, total=total,
-             trs=float(s["trs"].mean()), flow_eff=flow_eff, lead_days=lead_days,
-             encours=float(s["wip_value"].sum()), smed=float(s["smed_potential"].sum()),
-             nq=constate * 1.15, bottleneck=str(s.loc[bi, "step_name"]),
-             bottleneck_cyc=float(s.loc[bi, "eff_cycle"]))
+    # récupérabilité (démo : indices saisis ; gain constaté = campagne suivante, R6)
+    _evit = {"defauts": .62, "attente": .70, "transport": .55, "sur_traitement": .40,
+             "mouvements": .50, "stocks_encours": .65, "surproduction": .60, "competences": .45}
+    _effort = {"defauts": 3.5, "attente": 2.5, "transport": 2.0, "sur_traitement": 3.0,
+               "mouvements": 1.5, "stocks_encours": 2.0, "surproduction": 2.5, "competences": 2.0}
+    mudas["evitable"] = mudas["key"].map(_evit) * mudas["value"]
+    mudas["objectif"] = 0.65 * mudas["evitable"]
+    mudas["effort"] = mudas["key"].map(_effort)
+
+    k = dict(
+        constate=float(s["m_defauts"].sum()),
+        capacite=float(s["m_capacite"].sum() + m_comp),
+        capital=float(s["m_stocks"].sum() + m_surprod),
+        d_l=float(d_l), p_l=float(p_l), q_l=float(q_l), trs=float(trs_l),
+        takt_s=float(takt_s), demande=demande,
+        prod_reelle=float(PROD_CAMPAGNE["production_reelle_jour"]),
+        otif=float(PROD_CAMPAGNE["otif_client"]),
+        goulot=str(s.loc[bi, "step_name"]), goulot_charge=float(s.loc[bi, "taux_charge"]),
+        flow_eff=float(flow_eff), lead_days=float(lead_days), lead_h=float(lead_h),
+        va_s=float(va_s_piece),
+        encours_units=float(s["wip_units"].sum()), encours=float(s["wip_value"].sum()),
+        rebut_pcs=float(s["rebut_pcs"].sum()), retouche_pcs=float(s["retouche_pcs"].sum()),
+        rework_h=float(s["rework_h"].sum()), m_surprod=float(m_surprod), m_comp=float(m_comp),
+        surprod_units=float(surprod_units), comp_h=float(comp_h),
+    )
     return s, mudas, k
+
+
+def prod_aggregate(level):
+    """TRS pondéré multi-niveaux (spec 2.2) : usine → atelier → ligne → poste.
+    Toujours agrégé sur les temps sous-jacents, jamais moyenne de ratios."""
+    s, _, _ = prod_compute()
+    keymap = {("Usine" if _PF else "Plant"): None,
+              ("Atelier" if _PF else "Workshop"): "workshop",
+              ("Ligne" if _PF else "Line"): "ligne",
+              ("Poste" if _PF else "Station"): "step_name"}
+    col = keymap.get(level)
+    g = s.assign(_u=(CLIENT_NAME if col is None else s[col]),
+                 _prodnom_h=s["pieces_produites"] * s["cycle_time_sec"] / 3600.0)
+    t = g.groupby("_u").agg(fonct=("temps_fonctionnement_h", "sum"),
+                            requis=("temps_requis_h", "sum"),
+                            prodnom=("_prodnom_h", "sum"),
+                            bonnes=("pieces_bonnes", "sum"),
+                            produites=("pieces_produites", "sum")).reset_index()
+    agg = pd.DataFrame({level: t["_u"],
+                        "D": t["fonct"] / t["requis"],
+                        "P": t["prodnom"] / t["fonct"],
+                        "Q": t["bonnes"] / t["produites"]})
+    agg["TRS"] = agg["D"] * agg["P"] * agg["Q"]
+    return agg.sort_values("TRS").reset_index(drop=True)
+
+
+# ── Moteur de recommandation (spec 2.3) ──────────────────────────────────────
+def composante_dominante(d, p, q):
+    """Retourne la composante la plus dégradée et son écart en points."""
+    ecarts = {("Disponibilité" if _PF else "Availability"): 1 - d,
+              ("Performance" if _PF else "Performance"): 1 - p,
+              ("Qualité" if _PF else "Quality"): 1 - q}
+    nom = max(ecarts, key=ecarts.get)
+    return nom, round(ecarts[nom] * 100, 1)
+
+
+PISTES = {
+    ("Disponibilité" if _PF else "Availability"):
+        ("pannes, réglages, changements de série, attente matière, absence opérateur" if _PF
+         else "breakdowns, setups, changeovers, material starvation, operator absence"),
+    ("Performance" if _PF else "Performance"):
+        ("micro-arrêts, cadence réelle sous nominale, usure outil, standard opératoire, alimentation du poste" if _PF
+         else "micro-stops, real rate below nominal, tool wear, work standard, station feeding"),
+    ("Qualité" if _PF else "Quality"):
+        ("rebut, retouche, dérive process, matière fournisseur" if _PF
+         else "scrap, rework, process drift, supplier material"),
+}
+
+
+def prod_unavailable(msg):
+    """R6 : un écran sans données affiche un message d'indisponibilité sobre."""
+    st.markdown('<div style="background:#f8f9fc;border:1px dashed rgba(15,23,42,0.15);'
+                'border-radius:12px;padding:22px 18px;text-align:center;font-size:13px;'
+                'color:#64748b;margin:6px 0 14px;">' + msg + '</div>', unsafe_allow_html=True)
+
+
+def prod_natures_note():
+    txt = ("Trois natures économiques distinctes, jamais additionnées : les pertes constatées sont des "
+           "décaissements réels ; la capacité non exploitée n'est valorisée qu'à hauteur de la demande "
+           "capable de l'absorber (taux d'absorption " + f"{TAUX_ABSORPTION_DEMANDE*100:.0f}" + " %) ; "
+           "le capital immobilisé est un coût de portage (" + f"{TAUX_POSSESSION_ANNUEL*100:.0f}" + " %/an), pas une perte."
+           if _PF else
+           "Three distinct economic natures, never summed: booked losses are real cash out; unexploited "
+           "capacity is valued only up to the demand able to absorb it (absorption rate " +
+           f"{TAUX_ABSORPTION_DEMANDE*100:.0f}" + "%); capital tied up is a carrying cost (" +
+           f"{TAUX_POSSESSION_ANNUEL*100:.0f}" + "%/yr), not a loss.")
+    st.markdown('<div style="background:#fff7ed;border-left:4px solid #f59e0b;border-radius:8px;'
+                'padding:9px 13px;font-size:12px;color:#92400e;margin:2px 0 14px;">⚠️ ' + txt + '</div>',
+                unsafe_allow_html=True)
 
 
 def _trs_class(v):
     return "kpi-danger" if v < 0.65 else ("kpi-warning" if v < 0.80 else "kpi-success")
 
 
-def prod_demo_banner():
-    msg = ("Données de démonstration — ce volet n'est pas encore branché à Supabase. "
-           "Les chiffres illustrent le rendu de la version définitive."
-           if _PF else
-           "Demo data — this module is not wired to Supabase yet. Figures illustrate the final look.")
-    st.markdown('<div style="background:#eef0ff;border:1px solid #c9ccff;border-radius:12px;'
-                'padding:10px 14px;font-size:12.5px;color:#4338ca;margin-bottom:8px;">🧪 ' + msg + '</div>',
-                unsafe_allow_html=True)
-
-
-def prod_natures_note():
-    txt = ("Trois natures distinctes, non additionnables sans le dire : le coût constaté est un décaissement réel ; "
-           "la capacité perdue n'est un gain que si la demande existe pour l'absorber ; la trésorerie immobilisée "
-           "est un coût de portage, pas une perte sèche. Le total est étiqueté comme hétérogène."
-           if _PF else
-           "Three distinct natures, never summed silently: booked cost is real cash out; lost capacity is a gain "
-           "only if demand exists to absorb it; cash tied up is a carrying cost, not a loss. The total is labelled heterogeneous.")
-    st.markdown('<div style="background:#fff7ed;border-left:4px solid #f59e0b;border-radius:8px;'
-                'padding:9px 13px;font-size:12px;color:#92400e;margin:2px 0 14px;">⚠️ ' + txt + '</div>',
-                unsafe_allow_html=True)
+def _delta_txt(pct):
+    """Variation d'impact : à la baisse = vert (moins de gaspillage)."""
+    if pct is None:
+        return "", ""
+    if abs(pct) < 0.05:
+        return "→ 0.0%", "#94a3b8"
+    up = pct > 0
+    return (("↑" if up else "↓") + f" {abs(pct):.1f}%"), ("#e5484d" if up else "#12b76a")
 
 
 LOG_PAGES = [
@@ -3274,97 +3458,161 @@ if _page == T["tab_whatif"]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PRODUCTION SCREENS (demo — no DB reads)
+# PRODUCTION SCREENS
 # ══════════════════════════════════════════════════════════════════════════════
 if _page == P_SYNTH:
-    prod_demo_banner()
     st.subheader("📊 " + ("Où le cash se consume sur la ligne" if _PF else "Where cash burns on the line"))
     s, mudas, k = prod_compute()
     prod_natures_note()
 
-    c1, c2, c3, c4 = st.columns(4)
+    # ── Sélecteur de période (spec 3.1) ─────────────────────────────────────
+    _periods = ([("Aujourd'hui", 1.0 / JOURS_OUVRES_AN), ("Semaine", 5.0 / JOURS_OUVRES_AN),
+                 ("Mois", 18.3 / JOURS_OUVRES_AN), ("YTD", 160.0 / JOURS_OUVRES_AN), ("12 mois", 1.0)]
+                if _PF else
+                [("Today", 1.0 / JOURS_OUVRES_AN), ("Week", 5.0 / JOURS_OUVRES_AN),
+                 ("Month", 18.3 / JOURS_OUVRES_AN), ("YTD", 160.0 / JOURS_OUVRES_AN), ("12 months", 1.0)])
+    _pnames = [p[0] for p in _periods]
+    _psel = st.radio("Période", _pnames, index=4, horizontal=True,
+                     key="prod_period", label_visibility="collapsed")
+    _pfac = dict(_periods)[_psel]
+    # variations vs période précédente (démo — le back end fournira le réel)
+    _pdelta = {_pnames[0]: {"c": -1.8, "k": -0.9, "i": 0.4},
+               _pnames[1]: {"c": -2.6, "k": -1.2, "i": 0.7},
+               _pnames[2]: {"c": -3.1, "k": -1.8, "i": 1.1},
+               _pnames[3]: {"c": -6.4, "k": -3.5, "i": 2.0},
+               _pnames[4]: {"c": -8.2, "k": -4.1, "i": 2.6}}[_psel]
+
+    # ── R4 : trois cartes, une par nature — aucun total ─────────────────────
+    c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown(kpi_card(N_CONST, format_currency(k["constate"]), "kpi-danger",
-            info=("Décaissements réels : matière rebutée + heures de retouche. Non contestable." if _PF
-                  else "Real cash out: scrapped material + rework hours. Non-negotiable.")), unsafe_allow_html=True)
+        d = _delta_txt(_pdelta["c"])
+        st.markdown(kpi_card(N_CONST, format_currency(k["constate"] * _pfac), "kpi-danger",
+            delta=d[0], delta_color=d[1],
+            info=("Décaissements réels : matière rebutée valorisée au coût cumulé de l'étape + heures de retouche payées. Non contestable." if _PF
+                  else "Real cash out: scrapped material at step-accumulated cost + paid rework hours. Non-negotiable.")), unsafe_allow_html=True)
     with c2:
-        st.markdown(kpi_card(N_CAPA, format_currency(k["capacite"]), "kpi-warning",
-            info=("Heures de production non réalisées (attente, transport, sur-traitement, mouvements). "
-                  "Gain réel seulement si la demande existe." if _PF
-                  else "Production hours not made (waiting, transport, over-processing, motion). A gain only if demand exists.")), unsafe_allow_html=True)
+        d = _delta_txt(_pdelta["k"])
+        st.markdown(kpi_card(N_CAPA, format_currency(k["capacite"] * _pfac), "kpi-warning",
+            delta=d[0], delta_color=d[1],
+            info=(f"Heures non productives × coût horaire × taux d'absorption ({TAUX_ABSORPTION_DEMANDE*100:.0f} %). Une heure libérée ne vaut un euro que si la demande l'absorbe." if _PF
+                  else f"Non-productive hours × hourly cost × absorption rate ({TAUX_ABSORPTION_DEMANDE*100:.0f}%). A freed hour is worth money only if demand absorbs it.")), unsafe_allow_html=True)
     with c3:
-        st.markdown(kpi_card(N_TRESO, format_currency(k["treso"]), "kpi-info",
-            info=("Capital bloqué dans les encours et la surproduction — coût de portage, pas une perte sèche." if _PF
-                  else "Capital locked in WIP and overproduction — a carrying cost, not a loss.")), unsafe_allow_html=True)
-    with c4:
-        st.markdown(kpi_card(("Gaspillage annuel — total étiqueté" if _PF else "Annual waste — labelled total"),
-            format_currency(k["total"]), "kpi-danger",
-            info=("Somme des trois natures. Elles sont hétérogènes : à ne jamais présenter sans le préciser." if _PF
-                  else "Sum of the three natures. They are heterogeneous: never present it without saying so.")), unsafe_allow_html=True)
+        d = _delta_txt(_pdelta["i"])
+        st.markdown(kpi_card(N_CAPI, format_currency(k["capital"] * _pfac), "kpi-capital",
+            delta=d[0], delta_color=d[1],
+            info=(f"Encours + surproduction × taux de possession ({TAUX_POSSESSION_ANNUEL*100:.0f} %/an). Un coût de portage, pas une perte sèche." if _PF
+                  else f"WIP + overproduction × carrying rate ({TAUX_POSSESSION_ANNUEL*100:.0f}%/yr). A carrying cost, not a loss.")), unsafe_allow_html=True)
 
     st.write("")
+    # ── TRS pondéré + composantes (spec 2.2) ────────────────────────────────
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.markdown(kpi_card("TRS " + ("moyen ligne" if _PF else "line avg"), f"{k['trs']*100:.1f}%", _trs_class(k["trs"]),
-            info=("Disponibilité × performance × qualité. Indicateur universel en industrie." if _PF
-                  else "Availability × performance × quality. The universal industrial indicator.")), unsafe_allow_html=True)
+        st.markdown(kpi_card("TRS " + ("ligne (pondéré)" if _PF else "line (weighted)"),
+            f"{k['trs']*100:.1f}%", _trs_class(k["trs"]),
+            info=("D × P × Q, agrégés sur les temps réels de chaque poste — jamais une moyenne de ratios." if _PF
+                  else "D × P × Q aggregated on each station's actual times — never an average of ratios.")), unsafe_allow_html=True)
     with c2:
-        st.markdown(kpi_card(("Efficacité de flux" if _PF else "Flow efficiency"), f"{k['flow_eff']*100:.1f}%", "kpi-danger",
-            info=("Temps à valeur ajoutée / temps de traversée. En PME non optimisée : 1 à 5 %." if _PF
-                  else "Value-added time / total lead time. In an unoptimised SME: 1–5%.")), unsafe_allow_html=True)
+        st.markdown(kpi_card(("Disponibilité ligne" if _PF else "Line availability"),
+            f"{k['d_l']*100:.1f}%", "kpi-info",
+            info=("Σ temps de fonctionnement / Σ temps requis." if _PF else "Σ run time / Σ required time.")), unsafe_allow_html=True)
     with c3:
-        st.markdown(kpi_card(("Encours valorisés" if _PF else "WIP value"), format_currency(k["encours"]), "kpi-warning",
-            info=("Quantité en cours × coût standard. C'est le pont vers le volet stock." if _PF
-                  else "WIP quantity × standard cost. The bridge to the stock module.")), unsafe_allow_html=True)
+        st.markdown(kpi_card(("Performance ligne" if _PF else "Line performance"),
+            f"{k['p_l']*100:.1f}%", "kpi-info",
+            info=("Σ (pièces × cycle nominal) / Σ temps de fonctionnement." if _PF else "Σ (pieces × nominal cycle) / Σ run time.")), unsafe_allow_html=True)
     with c4:
-        st.markdown(kpi_card(("Potentiel SMED / an" if _PF else "SMED potential / yr"), format_currency(k["smed"]), "kpi-success",
-            info=("Capacité récupérable en divisant par deux les temps de changement de série." if _PF
-                  else "Capacity recoverable by halving changeover times.")), unsafe_allow_html=True)
+        st.markdown(kpi_card(("Qualité ligne" if _PF else "Line quality"),
+            f"{k['q_l']*100:.1f}%", "kpi-info",
+            info=("Σ pièces bonnes / Σ pièces produites." if _PF else "Σ good pieces / Σ produced pieces.")), unsafe_allow_html=True)
 
     st.write("")
-    gL, gR = st.columns([3, 2], gap="medium")
+    gL, gR = st.columns([2, 3], gap="medium")
     with gL:
-        st.subheader(("Ventilation par nature" if _PF else "Breakdown by nature"))
-        nat = pd.DataFrame({"nature": [N_CONST, N_CAPA, N_TRESO],
-                            "value": [k["constate"], k["capacite"], k["treso"]]})
-        fig = px.bar(nat, x="value", y="nature", orientation="h", color="nature",
-                     color_discrete_map=PROD_NATURE_COLOR, text="value")
-        fig.update_traces(texttemplate="%{text:,.0f} " + CURRENCY, textposition="outside", cliponaxis=False)
-        fig = style_fig(fig, height=300)
-        fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="")
-        st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+        st.subheader(("TRS par niveau" if _PF else "OEE by level"))
+        lvls = ([("Usine"), ("Atelier"), ("Ligne"), ("Poste")] if _PF
+                else [("Plant"), ("Workshop"), ("Line"), ("Station")])
+        lvl = st.selectbox(("Niveau d'agrégation" if _PF else "Aggregation level"), lvls, index=1, key="prod_lvl")
+        agg = prod_aggregate(lvl)
+        fpc = lambda v: f"{float(v)*100:.1f} %"
+        render_table(agg, formats={"D": fpc, "P": fpc, "Q": fpc, "TRS": fpc})
     with gR:
-        st.subheader(("Les sept mudas" if _PF else "The seven wastes"))
-        fig = px.pie(mudas, values="value", names="muda", hole=0.6, color="nature",
-                     color_discrete_map=PROD_NATURE_COLOR)
-        fig.update_traces(sort=False, textinfo="percent", textposition="inside",
-                          marker=dict(line=dict(color="#ffffff", width=2)),
-                          hovertemplate="<b>%{label}</b><br>%{value:,.0f} " + CURRENCY + "<extra></extra>")
-        fig = style_fig(fig, height=300, legend=True)
-        fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.02, x=0.5, xanchor="center", font=dict(size=10)))
-        fig.add_annotation(text=f"<b>{format_currency(k['total'])}</b>", x=0.5, y=0.5, showarrow=False,
-                           font=dict(family="Plus Jakarta Sans", size=15, color="#0f172a"))
-        st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+        st.subheader(("Composition par nature" if _PF else "Composition by nature"))
+        dcols = st.columns(3)
+        _donuts = [
+            (N_CONST, pd.DataFrame({
+                "part": [("Rebut matière" if _PF else "Scrapped material"), ("Retouches" if _PF else "Rework")],
+                "value": [k["constate"] - k["rework_h"] * COUT_HORAIRE_MO,
+                          k["rework_h"] * COUT_HORAIRE_MO]}),
+             ["#e5484d", "#f4a8aa"]),
+            (N_CAPA, mudas[mudas["nature"] == N_CAPA][["muda", "value"]].rename(columns={"muda": "part"}),
+             ["#f79009", "#f7c88a", "#fddcab", "#fef0d9", "#fca55d"]),
+            (N_CAPI, mudas[mudas["nature"] == N_CAPI][["muda", "value"]].rename(columns={"muda": "part"}),
+             ["#6355ff", "#c4b5fd"]),
+        ]
+        for _dc, (_nat, _df, _pal) in zip(dcols, _donuts):
+            with _dc:
+                figd = px.pie(_df, values="value", names="part", hole=0.62, color_discrete_sequence=_pal)
+                figd.update_traces(sort=False, textinfo="none",
+                                   marker=dict(line=dict(color="#ffffff", width=2)),
+                                   hovertemplate="<b>%{label}</b><br>%{value:,.0f} " + CURRENCY + "<extra></extra>")
+                figd = style_fig(figd, height=210, legend=True)
+                figd.update_layout(margin=dict(l=0, r=0, t=4, b=0),
+                                   legend=dict(orientation="h", yanchor="top", y=-0.05, x=0.5,
+                                               xanchor="center", font=dict(size=9)))
+                figd.add_annotation(text=f"<b>{format_currency(float(_df['value'].sum()))}</b>",
+                                    x=0.5, y=0.5, showarrow=False,
+                                    font=dict(family="Plus Jakarta Sans", size=13,
+                                              color=PROD_NATURE_COLOR[_nat]))
+                st.caption(_nat)
+                st.plotly_chart(figd, use_container_width=True, theme=None, config={"displayModeBar": False})
 
 
 if _page == P_FLOW:
-    prod_demo_banner()
     st.subheader("🗺️ " + ("Cartographie de flux" if _PF else "Flow map"))
     s, mudas, k = prod_compute()
 
-    c1, c2, c3 = st.columns(3)
+    # ── Bandeau takt (spec 3.2) ─────────────────────────────────────────────
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.markdown(kpi_card(("Temps de traversée" if _PF else "Lead time"), f"{k['lead_days']:.1f} " + ("j" if _PF else "d"),
-            "kpi-warning", info=("Cumul cycle + attente + encours sur la chaîne, en jours ouvrés." if _PF
-                                 else "Cumulative cycle + wait + WIP across the line, in working days.")), unsafe_allow_html=True)
+        st.markdown(kpi_card(("Demande client" if _PF else "Customer demand"),
+            f"{k['demande']:.0f} " + ("pcs/j" if _PF else "pcs/d"), "kpi-info",
+            info=("Demande journalière moyenne — le rythme que la ligne doit tenir." if _PF
+                  else "Average daily demand — the pace the line must hold.")), unsafe_allow_html=True)
     with c2:
-        st.markdown(kpi_card(("Efficacité de flux" if _PF else "Flow efficiency"), f"{k['flow_eff']*100:.1f}%", "kpi-danger",
-            info=("Part du temps de traversée réellement à valeur ajoutée." if _PF
-                  else "Share of lead time that is actually value-added.")), unsafe_allow_html=True)
+        st.markdown(kpi_card("Takt", f"{k['takt_s']:.0f} s", "kpi-info",
+            info=(f"Ouverture site ({HEURES_OUVERTURE_JOUR:.0f} h) ÷ demande. Une pièce doit sortir toutes les {k['takt_s']:.0f} s." if _PF
+                  else f"Site opening ({HEURES_OUVERTURE_JOUR:.0f}h) ÷ demand. One piece must leave every {k['takt_s']:.0f}s.")), unsafe_allow_html=True)
     with c3:
-        st.markdown(kpi_card(("Goulot" if _PF else "Bottleneck"), _esc(k["bottleneck"]), "kpi-danger", small=True,
-            info=("Poste au temps de cycle effectif le plus élevé : il fixe la cadence de la ligne." if _PF
-                  else "Station with the highest effective cycle time: it sets the line pace.")), unsafe_allow_html=True)
+        _pr_cls = "kpi-danger" if k["prod_reelle"] < k["demande"] else "kpi-success"
+        st.markdown(kpi_card(("Production réelle" if _PF else "Actual output"),
+            f"{k['prod_reelle']:.0f} " + ("pcs/j" if _PF else "pcs/d"), _pr_cls,
+            info=("Production journalière constatée sur la campagne, à comparer à la demande." if _PF
+                  else "Measured daily output over the campaign, vs demand.")), unsafe_allow_html=True)
+    with c4:
+        _ot_cls = "kpi-danger" if k["otif"] < 0.90 else ("kpi-warning" if k["otif"] < 0.95 else "kpi-success")
+        st.markdown(kpi_card(("OTIF client" if _PF else "Customer OTIF"),
+            f"{k['otif']*100:.1f}%", _ot_cls,
+            info=("Un beau TRS peut cacher des clients livrés en retard : l'OTIF tranche." if _PF
+                  else "A nice OEE can hide late deliveries: OTIF settles it.")), unsafe_allow_html=True)
+
+    st.write("")
+    # ── Efficacité de flux détaillée (spec 3.2) ─────────────────────────────
+    c1, c2, c3 = st.columns(3)
+    _va_lbl = (f"{k['va_s']/60:.1f} min" if k["va_s"] < 3600 else f"{k['va_s']/3600:.1f} h")
+    with c1:
+        st.markdown(kpi_card(("Lead time total" if _PF else "Total lead time"),
+            f"{k['lead_days']:.1f} j ({k['lead_h']:.1f} h)", "kpi-warning",
+            info=("Traversée complète d'une pièce, encours compris." if _PF
+                  else "Full traversal of one piece, WIP included.")), unsafe_allow_html=True)
+    with c2:
+        st.markdown(kpi_card(("Temps à valeur ajoutée" if _PF else "Value-added time"),
+            _va_lbl, "kpi-success",
+            info=("Le temps pendant lequel la pièce est réellement transformée." if _PF
+                  else "Time during which the piece is actually transformed.")), unsafe_allow_html=True)
+    with c3:
+        st.markdown(kpi_card(("Efficacité de flux" if _PF else "Flow efficiency"),
+            f"{k['flow_eff']*100:.1f}%", "kpi-danger",
+            info=("VA ÷ traversée. Entre 1 et 5 % dans une PME non optimisée." if _PF
+                  else "VA ÷ lead time. 1–5% in an unoptimised SME.")), unsafe_allow_html=True)
 
     st.write("")
     st.subheader(("Temps par étape — valeur ajoutée vs non-valeur" if _PF else "Time per step — value-added vs non-value"))
@@ -3375,167 +3623,452 @@ if _page == P_FLOW:
                          name=("Valeur ajoutée" if _PF else "Value-added"), marker_color="#12b76a"))
     fig.add_trace(go.Bar(x=fl["step_name"], y=fl["nonva"],
                          name=("Non-valeur" if _PF else "Non-value"), marker_color="#cbd5e1"))
-    fig = style_fig(fig, height=330, legend=True)
+    fig = style_fig(fig, height=300, legend=True)
     fig.update_layout(barmode="stack", xaxis_title="", yaxis_title=("Secondes / pièce" if _PF else "Seconds / piece"))
     st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
 
-    st.subheader(("Temps de cycle effectif — le goulot en rouge" if _PF else "Effective cycle time — bottleneck in red"))
-    ec = s.copy()
-    ec["is_bottleneck"] = ec["step_name"] == k["bottleneck"]
-    fig2 = px.bar(ec, x="step_name", y="eff_cycle", color="is_bottleneck",
-                  color_discrete_map={True: "#e5484d", False: "#bcd0f5"})
-    fig2 = style_fig(fig2, height=300)
-    fig2.update_layout(showlegend=False, xaxis_title="", yaxis_title=("Cycle effectif (s)" if _PF else "Effective cycle (s)"))
-    st.plotly_chart(fig2, use_container_width=True, theme=None, config={"displayModeBar": False})
+    gL, gR = st.columns(2, gap="medium")
+    with gL:
+        st.subheader(("Cycle effectif vs takt" if _PF else "Effective cycle vs takt"))
+        fig2 = px.bar(s, x="step_name", y="eff_cycle", color_discrete_sequence=["#bcd0f5"])
+        fig2.add_hline(y=k["takt_s"], line=dict(color="#e5484d", width=1.5, dash="dot"),
+                       annotation_text=f"takt {k['takt_s']:.0f}s", annotation_font_color="#e5484d")
+        fig2 = style_fig(fig2, height=300)
+        fig2.update_layout(showlegend=False, xaxis_title="", yaxis_title=("Cycle effectif (s)" if _PF else "Effective cycle (s)"))
+        st.plotly_chart(fig2, use_container_width=True, theme=None, config={"displayModeBar": False})
+        st.caption(("Aucun cycle ne dépasse le takt site — et pourtant la ligne sature. C'est le taux de charge, pas le cycle, qui révèle le goulot →" if _PF
+                    else "No cycle exceeds site takt — yet the line saturates. Load rate, not cycle time, reveals the bottleneck →"))
+    with gR:
+        st.subheader(("Goulot par taux de charge" if _PF else "Bottleneck by load rate"))
+        ch = s.sort_values("taux_charge")
+        _cols = ["#e5484d" if v > 1.0 else ("#f79009" if v > 0.9 else "#bcd0f5") for v in ch["taux_charge"]]
+        fig3 = go.Figure(go.Bar(x=ch["taux_charge"] * 100, y=ch["step_name"], orientation="h",
+                                marker_color=_cols,
+                                hovertemplate="<b>%{y}</b><br>%{x:.0f} %<extra></extra>"))
+        fig3.add_vline(x=100, line=dict(color="#0f172a", width=1.5, dash="dot"))
+        fig3 = style_fig(fig3, height=300)
+        fig3.update_layout(xaxis_title=("Taux de charge (%)" if _PF else "Load rate (%)"), yaxis_title="")
+        st.plotly_chart(fig3, use_container_width=True, theme=None, config={"displayModeBar": False})
+        st.caption((f"Goulot : {k['goulot']} — {k['goulot_charge']*100:.0f} % de charge (capacité nette : ouverture × machines × disponibilité ÷ cycle)." if _PF
+                    else f"Bottleneck: {k['goulot']} — {k['goulot_charge']*100:.0f}% load (net capacity: opening × machines × availability ÷ cycle)."))
+
+    # ── Encours entre opérations (spec 3.2) ─────────────────────────────────
+    st.subheader(("Encours entre opérations" if _PF else "WIP between operations"))
+    _enc = []
+    for i in range(1, len(s)):
+        amont, aval = s.iloc[i - 1], s.iloc[i]
+        pcs = float(aval["wip_units"])
+        _enc.append({
+            ("Liaison" if _PF else "Link"): f"{amont['step_name']} → {aval['step_name']}",
+            ("Pièces en attente" if _PF else "Waiting pieces"): pcs,
+            ("Valeur" if _PF else "Value"): pcs * float(amont["cost_at_step"]),
+            ("Attente moyenne (h)" if _PF else "Avg wait (h)"): pcs / k["demande"] * HEURES_OUVERTURE_JOUR,
+            ("Couverture (j)" if _PF else "Coverage (d)"): pcs / k["demande"],
+        })
+    _encdf = pd.DataFrame(_enc)
+    _c = _encdf.columns
+    render_table(_encdf, formats={_c[1]: lambda v: format_number(v),
+                                  _c[2]: lambda v: format_currency(v),
+                                  _c[3]: lambda v: f"{float(v):.1f}",
+                                  _c[4]: lambda v: f"{float(v):.2f}"})
+
+    st.subheader(("Variabilité par poste" if _PF else "Per-station variability"))
+    prod_unavailable(("Nécessite des relevés cycle par cycle (médiane, P90, P95…). "
+                      "Disponible dès que la campagne inclut les cycles unitaires." if _PF
+                      else "Requires cycle-by-cycle measurements (median, P90, P95…). "
+                      "Available once the campaign includes unit cycles."))
 
 
 if _page == P_MUDA:
-    prod_demo_banner()
-    st.subheader("🗑️ " + ("Les sept mudas, valorisés" if _PF else "The seven wastes, valued"))
+    st.subheader("🗑️ " + ("Les huit mudas, quantifiés puis valorisés" if _PF else "The eight wastes, quantified then valued"))
     s, mudas, k = prod_compute()
     prod_natures_note()
 
-    gL, gR = st.columns([3, 2], gap="medium")
-    with gL:
-        st.subheader(("Classement par impact" if _PF else "Ranked by impact"))
-        m2 = mudas.sort_values("value")
-        fig = px.bar(m2, x="value", y="muda", orientation="h", color="nature",
-                     color_discrete_map=PROD_NATURE_COLOR, text="value")
-        fig.update_traces(texttemplate="%{text:,.0f} " + CURRENCY, textposition="outside", cliponaxis=False)
-        fig = style_fig(fig, height=340, legend=True)
-        fig.update_layout(xaxis_title="", yaxis_title="",
-                          legend=dict(orientation="h", yanchor="bottom", y=-0.18, x=0, font=dict(size=10)))
-        st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
-    with gR:
-        st.subheader(("Détail chiffré" if _PF else "Figures"))
-        tbl = mudas.rename(columns={"muda": ("Muda" if _PF else "Waste"),
-                                    "value": ("Valeur / an" if _PF else "Value / yr"),
-                                    "nature": "Nature"})
-        vcol = ("Valeur / an" if _PF else "Value / yr")
-        render_table(tbl, formats={vcol: lambda v: format_currency(v)})
+    # ── Tableau : quantité physique obligatoire (R1 / spec 3.3) ─────────────
+    cQ = ("Quantité physique" if _PF else "Physical quantity")
+    cU = ("Unité" if _PF else "Unit")
+    cO = "Occurrences"
+    cH = ("Heures" if _PF else "Hours")
+    cV = ("Impact économique" if _PF else "Economic impact")
+    tbl = pd.DataFrame({
+        "Muda": mudas["muda"], cQ: mudas["qty_label"], cU: mudas["unite"],
+        cO: mudas["occurrences"], cH: mudas["heures"], cV: mudas["value"], "Nature": mudas["nature"],
+    })
+    def _nat_style(v):
+        col = PROD_NATURE_COLOR.get(str(v), "#64748b")
+        return f"color:{col};font-weight:700;"
+    render_table(tbl, formats={cO: lambda v: format_number(v),
+                               cH: lambda v: (f"{float(v):,.0f}" if float(v) > 0 else "—"),
+                               cV: lambda v: format_currency(v)},
+                 cell_style={"Nature": _nat_style})
 
-    st.subheader(("Répartition par atelier" if _PF else "By workshop"))
-    ws = s.groupby("workshop", as_index=False).agg(
-        constate=("m_defauts", "sum"), capacite=("m_capacite", "sum"), treso=("m_stocks", "sum"))
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=ws["workshop"], y=ws["constate"], name=N_CONST, marker_color=PROD_NATURE_COLOR[N_CONST]))
-    fig.add_trace(go.Bar(x=ws["workshop"], y=ws["capacite"], name=N_CAPA, marker_color=PROD_NATURE_COLOR[N_CAPA]))
-    fig.add_trace(go.Bar(x=ws["workshop"], y=ws["treso"], name=N_TRESO, marker_color=PROD_NATURE_COLOR[N_TRESO]))
-    fig = style_fig(fig, height=320, legend=True)
-    fig.update_layout(barmode="stack", xaxis_title="", yaxis_title=CURRENCY)
-    st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+    # ── Bascule d'axe de lecture (spec 3.3) ─────────────────────────────────
+    axes = ([("Impact €", "value"), ("Occurrences", "occurrences"),
+             ("Heures perdues", "heures"), ("Quantité", "qty")] if _PF else
+            [("Impact €", "value"), ("Occurrences", "occurrences"),
+             ("Hours lost", "heures"), ("Quantity", "qty")])
+    _axn = [a[0] for a in axes]
+    _axsel = st.radio(("Axe de lecture" if _PF else "Reading axis"), _axn, horizontal=True, key="muda_axis")
+    _axcol = dict(axes)[_axsel]
+    m2 = mudas.sort_values(_axcol)
+    figm = px.bar(m2, x=_axcol, y="muda", orientation="h", color="nature",
+                  color_discrete_map=PROD_NATURE_COLOR, text=_axcol)
+    _fmt = "%{text:,.0f} " + CURRENCY if _axcol == "value" else "%{text:,.0f}"
+    figm.update_traces(texttemplate=_fmt, textposition="outside", cliponaxis=False)
+    figm = style_fig(figm, height=340, legend=True)
+    figm.update_layout(xaxis_title="", yaxis_title="",
+                       legend=dict(orientation="h", yanchor="bottom", y=-0.2, x=0, font=dict(size=10)))
+    st.plotly_chart(figm, use_container_width=True, theme=None, config={"displayModeBar": False})
+    st.caption(("Un incident unique à fort impact et une nuée de petits incidents n'appellent pas la même réponse — le Pareto en euros seul masque l'instabilité structurelle." if _PF
+                else "One big incident and a swarm of small ones call for different responses — a euro-only Pareto hides structural instability."))
+
+    gL, gR = st.columns(2, gap="medium")
+    with gL:
+        st.subheader(("Répartition par atelier" if _PF else "By workshop"))
+        ws = s.groupby("workshop", as_index=False).agg(
+            constate=("m_defauts", "sum"), capacite=("m_capacite", "sum"), capital=("m_stocks", "sum"))
+        figw = go.Figure()
+        figw.add_trace(go.Bar(x=ws["workshop"], y=ws["constate"], name=N_CONST, marker_color=PROD_NATURE_COLOR[N_CONST]))
+        figw.add_trace(go.Bar(x=ws["workshop"], y=ws["capacite"], name=N_CAPA, marker_color=PROD_NATURE_COLOR[N_CAPA]))
+        figw.add_trace(go.Bar(x=ws["workshop"], y=ws["capital"], name=N_CAPI, marker_color=PROD_NATURE_COLOR[N_CAPI]))
+        figw = style_fig(figw, height=300, legend=True)
+        figw.update_layout(barmode="group", xaxis_title="", yaxis_title=CURRENCY,
+                           legend=dict(orientation="h", yanchor="bottom", y=-0.35, x=0, font=dict(size=9.5)))
+        st.plotly_chart(figw, use_container_width=True, theme=None, config={"displayModeBar": False})
+        st.caption(("Surproduction et compétences sont des grandeurs de ligne, non ventilées par atelier." if _PF
+                    else "Overproduction and skills are line-level figures, not split by workshop."))
+    with gR:
+        st.subheader(("Matrice Impact × Effort" if _PF else "Impact × Effort matrix"))
+        figx = px.scatter(mudas, x="effort", y="evitable", color="nature", text="muda",
+                          color_discrete_map=PROD_NATURE_COLOR, size="value", size_max=38)
+        figx.update_traces(textposition="top center", textfont=dict(size=10))
+        figx = style_fig(figx, height=300, legend=False)
+        figx.update_layout(xaxis_title=("Effort (1 = facile → 5 = lourd)" if _PF else "Effort (1 = easy → 5 = heavy)"),
+                           yaxis_title=("Part évitable (€)" if _PF else "Avoidable share (€)"),
+                           xaxis=dict(range=[0.5, 5.5]))
+        st.plotly_chart(figx, use_container_width=True, theme=None, config={"displayModeBar": False})
+
+    # ── Chaîne de récupérabilité (spec 3.3) ─────────────────────────────────
+    st.subheader(("Récupérabilité" if _PF else "Recoverability"))
+    cI = ("Impact identifié" if _PF else "Identified impact")
+    cE = ("Part techniquement évitable" if _PF else "Technically avoidable")
+    cOb = ("Objectif retenu" if _PF else "Committed target")
+    cG = ("Gain constaté" if _PF else "Measured gain")
+    rec = pd.DataFrame({"Muda": mudas["muda"], "Nature": mudas["nature"],
+                        cI: mudas["value"], cE: mudas["evitable"], cOb: mudas["objectif"],
+                        cG: ["—"] * len(mudas)})
+    render_table(rec, formats={cI: lambda v: format_currency(v), cE: lambda v: format_currency(v),
+                               cOb: lambda v: format_currency(v)},
+                 cell_style={"Nature": _nat_style})
+    st.caption(("Le gain constaté se mesure à la campagne suivante — il alimente le taux de réalisation du Suivi." if _PF
+                else "Measured gain comes from the next campaign — it feeds the realisation rate in Tracking."))
+
+    st.subheader(("Pareto des causes racines" if _PF else "Root-cause Pareto"))
+    prod_unavailable(("Nécessite la codification des causes (cause_code) sur les événements terrain. "
+                      "L'écran s'activera dès que la codification est en place chez le client." if _PF
+                      else "Requires cause coding (cause_code) on field events. "
+                      "This screen activates once cause coding is in place."))
 
 
 if _page == P_POSTE:
-    prod_demo_banner()
     st.subheader("🏭 " + ("Détail par poste" if _PF else "By workstation"))
     s, mudas, k = prod_compute()
 
-    def _prod_action(r):
-        if r["scrap_rate"] + r["rework_rate"] >= 0.05:
-            return ("Réduire la non-qualité" if _PF else "Cut non-quality")
-        if r["trs"] < 0.70:
-            return ("Redresser le TRS" if _PF else "Lift OEE")
-        if r["smed_potential"] >= 4000:
-            return ("Chantier SMED" if _PF else "SMED workshop")
-        if r["wip_units"] >= 45:
-            return ("Réduire les encours" if _PF else "Cut WIP")
-        return ("Maintenir" if _PF else "Hold")
-
     d = s.copy()
-    d["action"] = d.apply(_prod_action, axis=1)
-    cols = {
-        "step_name": ("Poste" if _PF else "Station"),
-        "workshop": ("Atelier" if _PF else "Workshop"),
-        "trs": "TRS",
-        "availability_rate": ("Dispo." if _PF else "Avail."),
-        "performance_rate": ("Perf." if _PF else "Perf."),
-        "quality_rate": ("Qualité" if _PF else "Quality"),
-        "m_total": ("Gaspillage / an" if _PF else "Waste / yr"),
-        "smed_potential": ("Potentiel SMED" if _PF else "SMED potential"),
-        "action": ("Action recommandée" if _PF else "Recommended action"),
-    }
-    tbl = d[list(cols.keys())].rename(columns=cols)
-    pctc = [cols["trs"], cols["availability_rate"], cols["performance_rate"], cols["quality_rate"]]
-    curc = [cols["m_total"], cols["smed_potential"]]
-    fmts = {}
-    for c in pctc:
-        fmts[c] = lambda v: f"{float(v)*100:.0f}%"
-    for c in curc:
-        fmts[c] = lambda v: format_currency(v)
+    _comps = d.apply(lambda r: composante_dominante(r["availability_rate"], r["performance_rate"], r["quality_rate"]), axis=1)
+    d["comp_nom"] = [c[0] for c in _comps]
+    d["comp_txt"] = [f"{c[0]} — {c[1]:.1f} pts" for c in _comps]
 
-    def _action_style(v):
-        s0 = str(v)
-        if s0 in (("Réduire la non-qualité" if _PF else "Cut non-quality"), ("Redresser le TRS" if _PF else "Lift OEE")):
+    cP = ("Poste" if _PF else "Station"); cA = ("Atelier" if _PF else "Workshop")
+    cD, cPe, cQ2 = ("Dispo." if _PF else "Avail."), "Perf.", ("Qualité" if _PF else "Quality")
+    cCh = ("Charge" if _PF else "Load")
+    cC1, cC2, cC3 = ("Constaté €" if _PF else "Booked €"), ("Capacité €" if _PF else "Capacity €"), ("Capital €" if _PF else "Capital €")
+    cCo = ("Composante à traiter" if _PF else "Component to address")
+    tbl = pd.DataFrame({
+        cP: d["step_name"], cA: d["workshop"],
+        cD: d["availability_rate"], cPe: d["performance_rate"], cQ2: d["quality_rate"],
+        "TRS": d["trs"], cCh: d["taux_charge"],
+        cC1: d["m_defauts"], cC2: d["m_capacite"], cC3: d["m_stocks"],
+        cCo: d["comp_txt"],
+    })
+    fpc = lambda v: f"{float(v)*100:.0f}%"
+    def _comp_style(v):
+        sv = str(v)
+        if sv.startswith(("Disponibilité", "Availability")):
             return "background:#fdecec;color:#b42318;font-weight:700;"
-        if s0 in (("Chantier SMED" if _PF else "SMED workshop"), ("Réduire les encours" if _PF else "Cut WIP")):
+        if sv.startswith("Performance"):
+            return "background:#fef3e2;color:#a15c07;font-weight:700;"
+        return "background:#eaf1fe;color:#1d4ed8;font-weight:700;"
+    def _charge_style(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return ""
+        if f > 1.0:
+            return "background:#fdecec;color:#b42318;font-weight:700;"
+        if f > 0.9:
             return "background:#fef3e2;color:#a15c07;font-weight:600;"
-        return "background:#e7f7ef;color:#0f7a4d;"
-
-    render_table(tbl, formats=fmts, cell_style={cols["action"]: _action_style})
+        return ""
+    render_table(tbl, formats={cD: fpc, cPe: fpc, cQ2: fpc, "TRS": fpc, cCh: fpc,
+                               cC1: lambda v: format_currency(v),
+                               cC2: lambda v: format_currency(v),
+                               cC3: lambda v: format_currency(v)},
+                 cell_style={cCo: _comp_style, cCh: _charge_style})
+    _lg = "".join(f'<div style="margin:3px 0;"><b style="color:#334155;">{c}</b> — {p}</div>' for c, p in PISTES.items())
+    st.markdown('<div style="background:#f8f9fc;border:1px solid rgba(15,23,42,0.06);border-radius:10px;'
+                'padding:10px 14px;font-size:11.5px;color:#64748b;margin:4px 0 14px;">'
+                + ("🧭 <b>Pistes d'investigation</b> (aucune cause n'est établie sans vérification terrain) :"
+                   if _PF else "🧭 <b>Investigation leads</b> (no cause is established without floor verification):")
+                + _lg + '</div>', unsafe_allow_html=True)
 
     st.subheader(("TRS décomposé par poste" if _PF else "OEE decomposed by station"))
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=d["step_name"], y=d["availability_rate"] * 100, name=("Dispo." if _PF else "Avail."), marker_color="#bcd0f5"))
-    fig.add_trace(go.Bar(x=d["step_name"], y=d["performance_rate"] * 100, name=("Perf." if _PF else "Perf."), marker_color="#8b7cff"))
-    fig.add_trace(go.Bar(x=d["step_name"], y=d["quality_rate"] * 100, name=("Qualité" if _PF else "Quality"), marker_color="#12b76a"))
-    fig = style_fig(fig, height=300, legend=True)
-    fig.update_layout(barmode="group", xaxis_title="", yaxis_title="%")
-    st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+    figd = go.Figure()
+    figd.add_trace(go.Bar(x=d["step_name"], y=d["availability_rate"] * 100, name=cD, marker_color="#bcd0f5"))
+    figd.add_trace(go.Bar(x=d["step_name"], y=d["performance_rate"] * 100, name="Perf.", marker_color="#8b7cff"))
+    figd.add_trace(go.Bar(x=d["step_name"], y=d["quality_rate"] * 100, name=cQ2, marker_color="#12b76a"))
+    figd = style_fig(figd, height=280, legend=True)
+    figd.update_layout(barmode="group", xaxis_title="", yaxis_title="%")
+    st.plotly_chart(figd, use_container_width=True, theme=None, config={"displayModeBar": False})
+
+    # ── Simulateur de points de TRS récupérables (spec 3.4) ─────────────────
+    st.subheader("🎚️ " + ("Simulateur de points de TRS récupérables" if _PF else "Recoverable OEE points simulator"))
+    simL, simR = st.columns(2, gap="large")
+    with simL:
+        psel = st.selectbox(("Poste" if _PF else "Station"), list(d["step_name"]), key="trs_sim_poste")
+        r = d[d["step_name"] == psel].iloc[0]
+        comp, ecart = composante_dominante(r["availability_rate"], r["performance_rate"], r["quality_rate"])
+        _map = {("Disponibilité" if _PF else "Availability"): "availability_rate",
+                "Performance": "performance_rate",
+                ("Qualité" if _PF else "Quality"): "quality_rate"}
+        cur = float(r[_map[comp]])
+        st.markdown((f"Composante dominante : **{comp}** ({cur*100:.0f} % — écart {ecart:.1f} pts)" if _PF
+                     else f"Dominant component: **{comp}** ({cur*100:.0f}% — gap {ecart:.1f} pts)"))
+        target = st.slider((f"{comp} cible" if _PF else f"Target {comp}"),
+                           min_value=float(round(cur * 100)), max_value=min(99.0, float(round(cur * 100)) + 20.0),
+                           value=min(99.0, float(round(cur * 100)) + 10.0), step=1.0, key="trs_sim_target") / 100.0
+        vals = {"availability_rate": float(r["availability_rate"]),
+                "performance_rate": float(r["performance_rate"]),
+                "quality_rate": float(r["quality_rate"])}
+        trs_old = vals["availability_rate"] * vals["performance_rate"] * vals["quality_rate"]
+        vals[_map[comp]] = target
+        trs_new = vals["availability_rate"] * vals["performance_rate"] * vals["quality_rate"]
+        freed_h = float(r["temps_requis_h"]) * (trs_new - trs_old)
+        pot = freed_h * float(r["machine_hourly_cost"] if r["machine_hourly_cost"] > 0 else COUT_HORAIRE_MACHINE)
+        real = pot * TAUX_ABSORPTION_DEMANDE
+    with simR:
+        st.markdown(kpi_card(("TRS théorique" if _PF else "Theoretical OEE"),
+            f"{trs_new*100:.1f}% (+{(trs_new-trs_old)*100:.1f} pts)", _trs_class(trs_new)), unsafe_allow_html=True)
+        st.markdown(kpi_card(("Capacité libérée" if _PF else "Freed capacity"),
+            f"{freed_h:,.0f} h/an", "kpi-info",
+            info=("Heures utiles supplémentaires = temps requis × Δ TRS." if _PF
+                  else "Extra useful hours = required time × Δ OEE.")), unsafe_allow_html=True)
+        st.markdown(kpi_card(("Valeur potentielle (capacité)" if _PF else "Potential value (capacity)"),
+            format_currency(pot), "",
+            info=("Une capacité, pas un gain : elle ne vaut que si la demande l'absorbe." if _PF
+                  else "A capacity, not a gain: worth money only if demand absorbs it.")), unsafe_allow_html=True)
+        st.markdown(kpi_card((f"Valeur réalisable (absorption {TAUX_ABSORPTION_DEMANDE*100:.0f} %)" if _PF
+                              else f"Realisable value (absorption {TAUX_ABSORPTION_DEMANDE*100:.0f}%)"),
+            format_currency(real), "kpi-success"), unsafe_allow_html=True)
+
+    # ── Simulateur SMED (spec 3.4) ──────────────────────────────────────────
+    st.subheader("⚙️ " + ("Simulateur SMED" if _PF else "SMED simulator"))
+    smL, smR = st.columns(2, gap="large")
+    with smL:
+        ps2 = st.selectbox(("Poste" if _PF else "Station"), list(d["step_name"]), index=1, key="smed_poste")
+        r2 = d[d["step_name"] == ps2].iloc[0]
+        chg, nchg = float(r2["changeover_min"]), float(r2["nb_changements_an"])
+        st.markdown((f"Changement actuel : **{chg:.0f} min** × **{nchg:,.0f} changements/an**" if _PF
+                     else f"Current changeover: **{chg:.0f} min** × **{nchg:,.0f} changeovers/yr**"))
+        obj = st.radio(("Objectif" if _PF else "Target"),
+                       ["−30 %", "−50 %", ("Personnalisé" if _PF else "Custom")],
+                       horizontal=True, key="smed_obj")
+        red = {"−30 %": 0.30, "−50 %": 0.50}.get(obj)
+        if red is None:
+            red = st.slider(("Réduction (%)" if _PF else "Reduction (%)"), 10, 80, 40, 5, key="smed_pct") / 100.0
+        freed2 = nchg * (chg * red) / 60.0
+        pot2 = freed2 * float(r2["poste_hourly"])
+        real2 = pot2 * TAUX_ABSORPTION_DEMANDE
+    with smR:
+        st.markdown(kpi_card(("Capacité libérée" if _PF else "Freed capacity"),
+            f"{freed2:,.0f} h/an", "kpi-info"), unsafe_allow_html=True)
+        st.markdown(kpi_card(("Valeur potentielle (capacité)" if _PF else "Potential value (capacity)"),
+            format_currency(pot2), "",
+            info=("Une capacité, pas un gain." if _PF else "A capacity, not a gain.")), unsafe_allow_html=True)
+        st.markdown(kpi_card((f"Valeur réalisable (absorption {TAUX_ABSORPTION_DEMANDE*100:.0f} %)" if _PF
+                              else f"Realisable value (absorption {TAUX_ABSORPTION_DEMANDE*100:.0f}%)"),
+            format_currency(real2), "kpi-success"), unsafe_allow_html=True)
+
+
+if _page == P_ACTIONS:
+    st.subheader("📋 " + ("Plan d'actions" if _PF else "Action plan"))
+    s, mudas, k = prod_compute()
+    st.caption(("L'écran qui fait passer du diagnostic au pilotage : il est saisi et tenu, pas calculé. "
+                "Chaque écart du Suivi se rattache à une action décidée ici." if _PF
+                else "The screen that turns diagnosis into steering: it is entered and maintained, not computed. "
+                "Every Tracking delta ties back to an action decided here."))
+
+    cAc = ("Action" if _PF else "Action"); cPo = ("Poste" if _PF else "Station")
+    cMu = "Muda"; cCa = ("Cause" if _PF else "Cause")
+    cPot = ("Potentiel accessible" if _PF else "Accessible potential")
+    cObj = ("Objectif retenu" if _PF else "Committed target")
+    cRe = ("Responsable" if _PF else "Owner"); cEc = ("Échéance" if _PF else "Due")
+    cSt = ("Statut" if _PF else "Status"); cGa = ("Gain constaté" if _PF else "Measured gain")
+    cDc = ("Date de constat" if _PF else "Measured on")
+    _statuts = (["À lancer", "En cours", "Clôturée", "Abandonnée"] if _PF
+                else ["To start", "In progress", "Closed", "Dropped"])
+
+    if "prod_actions" not in st.session_state:
+        st.session_state["prod_actions"] = pd.DataFrame([
+            {cAc: "Chantier SMED Tournage (40 → 20 min)", cPo: "Tournage", cMu: ("Attente" if _PF else "Waiting"),
+             cCa: "changement_serie", cPot: 21000.0, cObj: 14000.0, cRe: "D. Soury", cEc: "2026-11-30",
+             cSt: _statuts[1], cGa: None, cDc: None},
+            {cAc: ("Passage Assemblage en 2 équipes" if _PF else "Assembly to 2 shifts"), cPo: "Assemblage",
+             cMu: ("Attente" if _PF else "Waiting"), cCa: "goulot_charge", cPot: 38000.0, cObj: 25000.0,
+             cRe: "Resp. production", cEc: "2026-12-15", cSt: _statuts[0], cGa: None, cDc: None},
+            {cAc: ("Maintenance préventive broche Fraisage" if _PF else "Milling spindle preventive maintenance"),
+             cPo: "Fraisage", cMu: ("Attente" if _PF else "Waiting"), cCa: "panne", cPot: 16000.0, cObj: 11000.0,
+             cRe: "Maintenance", cEc: "2026-10-31", cSt: _statuts[1], cGa: None, cDc: None},
+            {cAc: ("Réduction rebut Tournage (outil + matière)" if _PF else "Turning scrap reduction"),
+             cPo: "Tournage", cMu: ("Défauts" if _PF else "Defects"), cCa: "usure_outil", cPot: 45000.0,
+             cObj: 30000.0, cRe: "Qualité", cEc: "2027-01-31", cSt: _statuts[0], cGa: None, cDc: None},
+            {cAc: ("Codification des causes d'arrêt" if _PF else "Downtime cause coding"), cPo: "—",
+             cMu: ("Attente" if _PF else "Waiting"), cCa: "—", cPot: None, cObj: None, cRe: "Hugo / SupplyStack",
+             cEc: "2026-10-15", cSt: _statuts[1], cGa: None, cDc: None},
+        ])
+
+    edited = st.data_editor(
+        st.session_state["prod_actions"], num_rows="dynamic", use_container_width=True, key="prod_actions_editor",
+        column_config={
+            cSt: st.column_config.SelectboxColumn(cSt, options=_statuts),
+            cPo: st.column_config.SelectboxColumn(cPo, options=["—"] + list(s["step_name"])),
+            cMu: st.column_config.SelectboxColumn(cMu, options=list(mudas["muda"])),
+            cPot: st.column_config.NumberColumn(cPot, format="%.0f €"),
+            cObj: st.column_config.NumberColumn(cObj, format="%.0f €"),
+            cGa: st.column_config.NumberColumn(cGa, format="%.0f €"),
+        })
+    st.session_state["prod_actions"] = edited
+
+    fc1, fc2, fc3 = st.columns(3)
+    with fc1:
+        fst = st.multiselect(cSt, _statuts, default=[], key="fa_st")
+    with fc2:
+        fre = st.multiselect(cRe, sorted(x for x in edited[cRe].dropna().unique()), default=[], key="fa_re")
+    with fc3:
+        fpo = st.multiselect(cPo, sorted(x for x in edited[cPo].dropna().unique()), default=[], key="fa_po")
+    view = edited.copy()
+    if fst:
+        view = view[view[cSt].isin(fst)]
+    if fre:
+        view = view[view[cRe].isin(fre)]
+    if fpo:
+        view = view[view[cPo].isin(fpo)]
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.markdown(kpi_card(("Actions au plan" if _PF else "Actions in plan"),
+            format_number(len(view)), "kpi-info"), unsafe_allow_html=True)
+    with m2:
+        st.markdown(kpi_card(("En cours" if _PF else "In progress"),
+            format_number(int((view[cSt] == _statuts[1]).sum())), "kpi-warning"), unsafe_allow_html=True)
+    with m3:
+        _obj_sum = pd.to_numeric(view[cObj], errors="coerce").fillna(0).sum()
+        st.markdown(kpi_card(cObj, format_currency(_obj_sum), "kpi-capital",
+            info=("Somme des objectifs saisis — l'engagement pris avec le client." if _PF
+                  else "Sum of committed targets — the promise made with the client.")), unsafe_allow_html=True)
+    with m4:
+        _gain_sum = pd.to_numeric(view[cGa], errors="coerce").fillna(0).sum()
+        st.markdown(kpi_card(cGa, format_currency(_gain_sum), "kpi-success",
+            info=("Se remplit au constat des campagnes suivantes." if _PF
+                  else "Filled as the next campaigns are measured.")), unsafe_allow_html=True)
+
+    st.download_button(("⬇️ Exporter le plan (CSV)" if _PF else "⬇️ Export plan (CSV)"),
+                       data=edited.to_csv(index=False).encode("utf-8-sig"),
+                       file_name="plan_actions_production.csv", mime="text/csv")
 
 
 if _page == P_SUIVI:
-    prod_demo_banner()
     st.subheader("📈 " + ("Suivi des campagnes de mesure" if _PF else "Measurement campaigns tracking"))
     s, mudas, k = prod_compute()
-    st.caption(("Comparaison entre campagnes de mesure terrain — matérialise les gains obtenus après actions." if _PF
-                else "Comparison across field measurement campaigns — materialises the gains achieved after actions."))
+    st.caption(("Projection illustrative sur une campagne unique — le suivi réel s'alimente des campagnes chargées et des actions clôturées." if _PF
+                else "Illustrative projection from a single campaign — real tracking feeds on loaded campaigns and closed actions."))
 
     camps = ["T1 2026", "T2 2026", "T3 2026", "T4 2026"]
-    fc = [1.00, 0.90, 0.80, 0.73]   # coût constaté
-    fa = [1.00, 0.95, 0.86, 0.79]   # capacité perdue
-    ft = [1.00, 0.92, 0.85, 0.80]   # trésorerie
-    trs = [k["trs"], k["trs"] + 0.03, k["trs"] + 0.06, k["trs"] + 0.09]
+    fc_ = [1.00, 0.90, 0.80, 0.73]
+    fa_ = [1.00, 0.95, 0.86, 0.79]
+    fi_ = [1.00, 0.92, 0.85, 0.80]
+    dD = [0.0, 0.03, 0.055, 0.08]
+    dP = [0.0, 0.01, 0.025, 0.04]
+    dQ = [0.0, 0.004, 0.007, 0.01]
     camp = pd.DataFrame({
         "campagne": camps,
-        N_CONST: [k["constate"] * f for f in fc],
-        N_CAPA: [k["capacite"] * f for f in fa],
-        N_TRESO: [k["treso"] * f for f in ft],
-        "TRS": trs,
+        N_CONST: [k["constate"] * f for f in fc_],
+        N_CAPA: [k["capacite"] * f for f in fa_],
+        N_CAPI: [k["capital"] * f for f in fi_],
+        "D": [min(0.99, k["d_l"] + x) for x in dD],
+        "P": [min(0.99, k["p_l"] + x) for x in dP],
+        "Q": [min(0.999, k["q_l"] + x) for x in dQ],
     })
-    camp["total"] = camp[[N_CONST, N_CAPA, N_TRESO]].sum(axis=1)
-    gain = float(camp["total"].iloc[0] - camp["total"].iloc[-1])
+    camp["TRS"] = camp["D"] * camp["P"] * camp["Q"]
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown(kpi_card(("Gaspillage — dernière campagne" if _PF else "Waste — latest campaign"),
-            format_currency(camp["total"].iloc[-1]), "kpi-warning"), unsafe_allow_html=True)
-    with c2:
-        st.markdown(kpi_card(("Gain vs T1" if _PF else "Gain vs T1"), format_currency(gain), "kpi-success",
-            info=("Réduction du gaspillage total entre la première et la dernière campagne." if _PF
-                  else "Total-waste reduction between the first and the latest campaign.")), unsafe_allow_html=True)
-    with c3:
+    # R4 : cartes par nature — « Impact économique identifié » & « Impact réduit vs référence »
+    c1, c2, c3, c4 = st.columns(4)
+    _cards = [(N_CONST, "kpi-danger"), (N_CAPA, "kpi-warning"), (N_CAPI, "kpi-capital")]
+    for _cc, (_nat, _cls) in zip([c1, c2, c3], _cards):
+        with _cc:
+            last, first = float(camp[_nat].iloc[-1]), float(camp[_nat].iloc[0])
+            dd = _delta_txt((last - first) / first * 100 if first else None)
+            st.markdown(kpi_card(_nat + (" — identifié" if _PF else " — identified"),
+                format_currency(last), _cls, delta=dd[0], delta_color=dd[1],
+                info=("Impact économique identifié sur la dernière campagne ; la variation est un impact réduit vs référence, pas un gain encaissé." if _PF
+                      else "Identified economic impact on the latest campaign; the delta is impact reduced vs baseline, not banked profit.")), unsafe_allow_html=True)
+    with c4:
         st.markdown(kpi_card(("TRS — dernière campagne" if _PF else "OEE — latest campaign"),
             f"{camp['TRS'].iloc[-1]*100:.1f}%", _trs_class(camp["TRS"].iloc[-1])), unsafe_allow_html=True)
 
     st.write("")
-    st.subheader(("Gaspillage par campagne, par nature" if _PF else "Waste per campaign, by nature"))
-    fig = go.Figure()
-    for nat, col in [(N_CONST, PROD_NATURE_COLOR[N_CONST]), (N_CAPA, PROD_NATURE_COLOR[N_CAPA]), (N_TRESO, PROD_NATURE_COLOR[N_TRESO])]:
-        fig.add_trace(go.Bar(x=camp["campagne"], y=camp[nat], name=nat, marker_color=col))
-    fig = style_fig(fig, height=320, legend=True)
-    fig.update_layout(barmode="stack", xaxis_title="", yaxis_title=CURRENCY)
-    st.plotly_chart(fig, use_container_width=True, theme=None, config={"displayModeBar": False})
+    gL, gR = st.columns(2, gap="medium")
+    with gL:
+        st.subheader(("Impact par campagne, par nature" if _PF else "Impact per campaign, by nature"))
+        figc = go.Figure()
+        for nat in [N_CONST, N_CAPA, N_CAPI]:
+            figc.add_trace(go.Bar(x=camp["campagne"], y=camp[nat], name=nat,
+                                  marker_color=PROD_NATURE_COLOR[nat]))
+        figc = style_fig(figc, height=300, legend=True)
+        figc.update_layout(barmode="group", xaxis_title="", yaxis_title=CURRENCY,
+                           legend=dict(orientation="h", yanchor="bottom", y=-0.35, x=0, font=dict(size=9.5)))
+        st.plotly_chart(figc, use_container_width=True, theme=None, config={"displayModeBar": False})
+    with gR:
+        st.subheader(("Évolution du TRS pondéré" if _PF else "Weighted OEE trend"))
+        figt = go.Figure()
+        figt.add_trace(go.Scatter(x=camp["campagne"], y=camp["TRS"] * 100, mode="lines+markers",
+                                  line=dict(color="#12b76a", width=2.5), marker=dict(size=8, color="#12b76a"),
+                                  fill="tozeroy", fillcolor="rgba(18,183,106,0.10)"))
+        figt = style_fig(figt, height=300)
+        figt.update_layout(yaxis=dict(range=[0, 100]), xaxis_title="", yaxis_title="TRS %")
+        st.plotly_chart(figt, use_container_width=True, theme=None, config={"displayModeBar": False})
 
-    st.subheader(("Évolution du TRS" if _PF else "OEE trend"))
-    fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=camp["campagne"], y=camp["TRS"] * 100, mode="lines+markers",
-                              line=dict(color="#12b76a", width=2.5), marker=dict(size=8, color="#12b76a"),
-                              fill="tozeroy", fillcolor="rgba(18,183,106,0.10)"))
-    fig2 = style_fig(fig2, height=260)
-    fig2.update_layout(yaxis=dict(range=[0, 100]), xaxis_title="", yaxis_title="TRS %")
-    st.plotly_chart(fig2, use_container_width=True, theme=None, config={"displayModeBar": False})
-
+    # ── Décomposition D/P/Q entre première et dernière campagne (spec 3.6) ──
+    st.subheader(("Pourquoi le TRS a bougé — décomposition D / P / Q" if _PF else "Why OEE moved — D / P / Q decomposition"))
+    _acts = {("Disponibilité" if _PF else "Availability"):
+                 ("SMED Tournage · maintenance préventive Fraisage" if _PF else "Turning SMED · milling preventive maintenance"),
+             "Performance": ("standard opératoire Ébavurage" if _PF else "Deburring work standard"),
+             ("Qualité" if _PF else "Quality"): ("réduction rebut Tournage" if _PF else "Turning scrap reduction"),
+             "TRS": "—"}
+    dec = pd.DataFrame({
+        ("Composante" if _PF else "Component"): [("Disponibilité" if _PF else "Availability"), "Performance",
+                                                 ("Qualité" if _PF else "Quality"), "TRS"],
+        camps[0]: [camp["D"].iloc[0], camp["P"].iloc[0], camp["Q"].iloc[0], camp["TRS"].iloc[0]],
+        camps[-1]: [camp["D"].iloc[-1], camp["P"].iloc[-1], camp["Q"].iloc[-1], camp["TRS"].iloc[-1]],
+        ("Écart" if _PF else "Delta"): [(camp["D"].iloc[-1] - camp["D"].iloc[0]),
+                                        (camp["P"].iloc[-1] - camp["P"].iloc[0]),
+                                        (camp["Q"].iloc[-1] - camp["Q"].iloc[0]),
+                                        (camp["TRS"].iloc[-1] - camp["TRS"].iloc[0])],
+        ("Actions du plan rattachées" if _PF else "Linked plan actions"): list(_acts.values()),
+    })
+    _cd = dec.columns
+    render_table(dec, formats={_cd[1]: lambda v: f"{float(v)*100:.1f} %",
+                               _cd[2]: lambda v: f"{float(v)*100:.1f} %",
+                               _cd[3]: lambda v: f"+{float(v)*100:.1f} pts" if float(v) >= 0 else f"{float(v)*100:.1f} pts"})
 
 
 # ── FOOTER ────────────────────────────────────────────────────────────────────
