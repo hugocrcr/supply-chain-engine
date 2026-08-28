@@ -1265,7 +1265,7 @@ def _format_api_error(e):
     return f"⚠️ AI request failed ({e.status_code}): {getattr(e, 'message', str(e))}"
 
 
-def ask_claude(user_question, conversation_history, text_placeholder=None):
+def ask_claude(user_question, conversation_history, text_placeholder=None, system_prompt=None):
     """Send question to Claude with streaming + tool calling."""
     try:
         import anthropic
@@ -1289,7 +1289,7 @@ def ask_claude(user_question, conversation_history, text_placeholder=None):
 
     system_param = [{
         "type": "text",
-        "text": SYSTEM_PROMPT,
+        "text": system_prompt or SYSTEM_PROMPT,
         "cache_control": {"type": "ephemeral"},
     }]
 
@@ -1471,7 +1471,8 @@ P_MUDA    = "🗑️ " + ("Les huit mudas" if _PF else "The eight wastes")
 P_POSTE   = "🏭 " + ("Détail par poste" if _PF else "By workstation")
 P_ACTIONS = "📋 " + ("Plan d'actions" if _PF else "Action plan")
 P_SUIVI   = "📈 " + ("Suivi" if _PF else "Tracking")
-PROD_PAGES = [P_SYNTH, P_FLOW, P_MUDA, P_POSTE, P_ACTIONS, P_SUIVI]
+P_AI      = "🤖 " + ("Assistant IA production" if _PF else "Production AI assistant")
+PROD_PAGES = [P_SYNTH, P_FLOW, P_MUDA, P_POSTE, P_ACTIONS, P_AI, P_SUIVI]
 
 # ── Les trois natures économiques (R3/R4) — jamais combinées ─────────────────
 N_CONST = ("Pertes économiques constatées" if _PF else "Booked economic losses")
@@ -1754,6 +1755,112 @@ def _delta_txt(pct):
         return "→ 0.0%", "#94a3b8"
     up = pct > 0
     return (("↑" if up else "↓") + f" {abs(pct):.1f}%"), ("#e5484d" if up else "#12b76a")
+
+
+# ── ASSISTANT IA PRODUCTION ──────────────────────────────────────────────────
+# Même moteur que l'assistant logistique (ask_claude), prompt système dédié au
+# schéma prod_* et aux règles R1-R4. R6 : indisponible tant que le back end
+# production (production_backend_v2.sql) n'est pas chargé.
+PROD_DB_SCHEMA = f"""
+DATABASE SCHEMA (PostgreSQL / Supabase) — PRODUCTION MODULE (tables prod_*):
+
+prod_campagnes — measurement campaigns (one field survey each)
+- campagne_id (PK), date_debut, date_fin, perimetre, auteur, methode_releve
+- demande_client_jour, production_reelle_jour, otif_client
+
+prod_postes — workstations
+- poste_id (PK), poste, atelier, ligne, nb_machines_paralleles
+- temps_ouverture_h_jour, cout_horaire_machine, cout_horaire_mo
+
+prod_mesures — R2: raw TIMES and PIECES per (campagne, poste). No stored ratio.
+- temps_requis_h, temps_fonctionnement_h, pieces_produites, pieces_bonnes
+- temps_cycle_nominal_s, temps_cycle_effectif_s
+
+prod_evenements — R1: PHYSICAL quantities per muda. No stored euro.
+- campagne_id, poste_id (NULL = line-level), type_muda -> prod_doctrine
+- quantite, unite, occurrences, cause_code, commentaire
+
+prod_doctrine — the product's valuation doctrine (same for every client)
+- type_muda (PK), libelle, unite_primaire, nature ('constate'|'capacite'|'capital')
+- formule (valuation rule), regle_anti_doublon
+
+prod_encours — WIP between operations: poste_amont, poste_aval, pieces,
+  cout_standard_unitaire, attente_moyenne_h
+
+prod_actions — the action plan: libelle, poste_id, type_muda, cause_code,
+  potentiel_accessible, objectif_retenu, gain_constate, responsable, echeance,
+  statut ('a_lancer'|'en_cours'|'cloturee'|'abandonnee'), date_constat
+
+PREFER THESE VIEWS (they apply the aggregation rules correctly):
+- v_prod_trs_poste — D (disponibilite), P (performance), Q (qualite), trs per poste & campagne
+- v_prod_trs_agrege — TIME-WEIGHTED D/P/Q/TRS by niveau ('atelier'|'ligne'|'usine')
+- v_prod_charge_poste — demande_client_jour, capacite_nette_jour, taux_charge (bottleneck = max)
+- v_prod_impact_nature — physical quantity + occurrences per muda and nature (NO euros, NO combined total)
+- v_prod_pareto_causes — quantities by cause_code (may be empty if causes not yet coded)
+- v_prod_suivi_campagnes — weighted D/P/Q/TRS per campaign (trend)
+
+VALUATION PARAMETERS (calibrated for this client — use them to convert quantities to euros):
+- COUT_HORAIRE_MO = {COUT_HORAIRE_MO} €/h (loaded labour)
+- COUT_HORAIRE_MACHINE = {COUT_HORAIRE_MACHINE} €/h default (prod_postes overrides per poste)
+- TAUX_ABSORPTION_DEMANDE = {TAUX_ABSORPTION_DEMANDE} — EVERY hours->euros conversion of
+  nature 'capacite' MUST be multiplied by this rate, and you must say so
+- TAUX_POSSESSION_ANNUEL = {TAUX_POSSESSION_ANNUEL} — 'capital' nature = value × this rate
+
+NON-NEGOTIABLE RULES (they define the product's credibility):
+- R4: NEVER add the three natures ('constate', 'capacite', 'capital') into one total.
+  Present them separately, always labelled.
+- R1: always present the PHYSICAL quantity first (hours, pieces, units), then its
+  valuation with the rule used.
+- 'capacite' euros are potential, not booked savings: real only if demand absorbs them.
+- 'capital' euros are a carrying cost, not a loss.
+- Scrap ('defauts' with commentaire='rebuts') is valued at the cost accumulated up to
+  the step, never at full standard cost.
+"""
+
+if _PF:
+    PROD_SYSTEM_PROMPT = f"""Vous êtes l'analyste IA du module PRODUCTION de SupplyStack, plateforme d'intelligence industrielle pour PME/ETI. Vous répondez aux questions sur le TRS, les gaspillages (mudas), le goulot, le flux et le plan d'actions en interrogeant la base du client en direct.
+
+{PROD_DB_SCHEMA}
+
+RÈGLES :
+1. Utilisez l'outil query_database (SELECT uniquement). N'inventez jamais de chiffres.
+2. Préférez les vues v_prod_* : elles appliquent les pondérations correctes. Ne moyennez JAMAIS des ratios de TRS entre postes — utilisez v_prod_trs_agrege.
+3. Quantité physique d'abord, euros ensuite, nature toujours nommée. Jamais de total combinant les trois natures (règle produit non négociable).
+4. Toute valorisation d'heures de capacité est multipliée par le taux d'absorption ({TAUX_ABSORPTION_DEMANDE*100:.0f} %) et vous le dites explicitement.
+5. Le goulot se lit dans v_prod_charge_poste (taux_charge max), pas au temps de cycle le plus long.
+6. Un TRS se commente par sa composante dominante (D, P ou Q) et des pistes d'investigation — jamais une cause présentée comme établie.
+7. Reliez vos constats aux actions de prod_actions quand c'est pertinent (potentiel, objectif, statut).
+8. Réponses concises (2 à 4 paragraphes) : réponse, contexte, recommandation. Montants formatés (12 400 €). TOUJOURS en français.
+9. LIMITE STRICTE : 2 requêtes SQL maximum par réponse. Privilégiez UNE requête avec JOINs.
+10. Si la donnée manque (causes non codifiées, cycles unitaires absents), dites précisément quel relevé terrain la fournirait.
+"""
+else:
+    PROD_SYSTEM_PROMPT = f"""You are the AI analyst of SupplyStack's PRODUCTION module for industrial SMEs. You answer questions about OEE, wastes (mudas), the bottleneck, flow and the action plan by querying the client's live database.
+
+{PROD_DB_SCHEMA}
+
+RULES:
+1. Use the query_database tool (SELECT only). Never invent figures.
+2. Prefer the v_prod_* views: they apply correct weighting. NEVER average OEE ratios across stations — use v_prod_trs_agrege.
+3. Physical quantity first, euros second, nature always named. Never a total combining the three natures (non-negotiable product rule).
+4. Every capacity hours->euros conversion is multiplied by the absorption rate ({TAUX_ABSORPTION_DEMANDE*100:.0f}%) and you say so explicitly.
+5. The bottleneck is read from v_prod_charge_poste (max taux_charge), not the longest cycle time.
+6. Comment OEE through its dominant component (D, P or Q) with investigation leads — never a cause stated as established.
+7. Tie findings to prod_actions when relevant (potential, target, status).
+8. Concise answers (2-4 paragraphs): answer, context, recommendation. Format amounts clearly.
+9. STRICT LIMIT: 2 SQL queries max per answer. Prefer ONE query with JOINs.
+10. If data is missing (causes not coded, unit cycles absent), say precisely which field survey would provide it.
+"""
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _prod_backend_ready():
+    """R6 probe: True once production_backend_v2.sql is loaded with data."""
+    try:
+        df = pd.read_sql("SELECT 1 FROM prod_mesures LIMIT 1", get_connection())
+        return not df.empty
+    except Exception:
+        return False
 
 
 LOG_PAGES = [
@@ -3984,6 +4091,101 @@ if _page == P_ACTIONS:
     st.download_button(("⬇️ Exporter le plan (CSV)" if _PF else "⬇️ Export plan (CSV)"),
                        data=edited.to_csv(index=False).encode("utf-8-sig"),
                        file_name="plan_actions_production.csv", mime="text/csv")
+
+
+if _page == P_AI:
+    st.subheader("🤖 " + ("Analyste production industrielle" if _PF else "Industrial production analyst"))
+    st.caption(("Posez vos questions sur le TRS, les gaspillages, le goulot, le flux et le plan d'actions en langage naturel." if _PF
+                else "Ask about OEE, wastes, the bottleneck, flow and the action plan in natural language."))
+
+    if not _prod_backend_ready():
+        prod_unavailable(("L'assistant interroge les tables de production (prod_*). "
+                          "Il s'activera dès que production_backend_v2.sql et une campagne de mesure "
+                          "seront chargés dans la base." if _PF else
+                          "The assistant queries the production tables (prod_*). It activates once "
+                          "production_backend_v2.sql and a measurement campaign are loaded."))
+    else:
+        for _k, _v in [("prod_ai_messages", []), ("prod_processed_ids", set()),
+                       ("prod_next_question", None), ("prod_next_question_id", None)]:
+            if _k not in st.session_state:
+                st.session_state[_k] = _v
+
+        st.markdown('<div style="font-size:13px;font-weight:700;margin:2px 0 8px;">'
+                    + ("Essayez de demander" if _PF else "Try asking") + '</div>', unsafe_allow_html=True)
+        sug_cols = st.columns(4)
+        suggestions = ([
+            "Où part le cash sur ma ligne, et sous quelle nature économique ?",
+            "Quel est mon goulot réel et pourquoi ce poste-là ?",
+            "Pourquoi mon TRS ligne est-il sous 70 % — quelle composante traiter ?",
+            "Quelles actions du plan ont le plus fort potentiel accessible ?",
+        ] if _PF else [
+            "Where does cash burn on my line, and under which economic nature?",
+            "What is my real bottleneck and why that station?",
+            "Why is my line OEE below 70% — which component to address?",
+            "Which plan actions have the highest accessible potential?",
+        ])
+        for i, sug in enumerate(suggestions):
+            with sug_cols[i]:
+                if st.button(sug, key=f"prod_sug_{i}", use_container_width=True):
+                    st.session_state.prod_next_question = sug
+                    st.session_state.prod_next_question_id = str(uuid.uuid4())
+
+        for msg in st.session_state.prod_ai_messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["display"], unsafe_allow_html=True)
+                for _sql, df in msg.get("dataframes", []):
+                    with st.expander(T["ai_see_data"]):
+                        render_table(df, index=True, height=300)
+
+        q = st.session_state.prod_next_question
+        qid = st.session_state.prod_next_question_id
+        already_done = qid in st.session_state.prod_processed_ids if qid else True
+
+        if q and qid and not already_done:
+            st.session_state.prod_processed_ids.add(qid)
+            st.session_state.prod_ai_messages.append({"role": "user", "display": q, "dataframes": [], "id": qid})
+            with st.chat_message("user"):
+                st.markdown(q)
+            with st.chat_message("assistant"):
+                placeholder = st.empty()
+                history = [{"role": m["role"], "content": m["display"]}
+                           for m in st.session_state.prod_ai_messages[:-1]]
+                try:
+                    answer, dataframes = ask_claude(q, history, text_placeholder=placeholder,
+                                                    system_prompt=PROD_SYSTEM_PROMPT)
+                except Exception as e:
+                    answer = f"⚠️ {e}"
+                    dataframes = []
+                    placeholder.markdown(answer)
+                for _sql, df in dataframes:
+                    with st.expander(T["ai_see_data"]):
+                        render_table(df, index=True, height=300)
+            st.session_state.prod_ai_messages.append(
+                {"role": "assistant", "display": answer, "dataframes": dataframes, "id": qid})
+            st.session_state.prod_next_question = None
+            st.session_state.prod_next_question_id = None
+
+        with st.form("prod_ai_form", clear_on_submit=True):
+            col_in, col_btn = st.columns([6, 1])
+            with col_in:
+                user_input = st.text_input(
+                    T["ai_placeholder"], key="prod_ai_input", label_visibility="collapsed",
+                    placeholder=("Posez une question sur votre production…" if _PF
+                                 else "Ask a question about your production…"))
+            with col_btn:
+                submitted = st.form_submit_button(T["ai_send"], use_container_width=True)
+        if submitted and user_input:
+            st.session_state.prod_next_question = user_input
+            st.session_state.prod_next_question_id = str(uuid.uuid4())
+            st.rerun()
+
+        if st.session_state.prod_ai_messages:
+            if st.button(T["ai_clear"], key="prod_ai_clear"):
+                st.session_state.prod_ai_messages = []
+                st.session_state.prod_processed_ids = set()
+                st.session_state.prod_next_question = None
+                st.session_state.prod_next_question_id = None
+                st.rerun()
 
 
 if _page == P_SUIVI:
