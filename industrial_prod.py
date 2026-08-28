@@ -1527,13 +1527,13 @@ def prod_demo():
     return steps, families
 
 
-@st.cache_data(show_spinner=False)
-def prod_compute():
-    """Modèle complet : temps → ratios (R2), quantités physiques → euros (R1),
-    une nature par muda (R3), aucun total inter-natures (R4)."""
-    steps, fams = prod_demo()
-    s = steps.merge(fams, on="product_family", how="left").sort_values("step_order").reset_index(drop=True)
-    vol, sc, mat = s["annual_volume"], s["standard_cost"], s["material_cost"]
+def _prod_core(s, lp):
+    """Moteur unique de calcul — alimenté soit par la démo, soit par la base.
+    temps → ratios (R2), quantités physiques → euros (R1), une nature par muda
+    (R3), aucun total inter-natures (R4).
+    s  : relevés par poste ; lp : paramètres de ligne (économie produit, demande)."""
+    s = s.sort_values("step_order").reset_index(drop=True)
+    vol = float(lp["annual_volume"]); sc = float(lp["standard_cost"]); mat = float(lp["material_cost"])
     D, P = s["availability_rate"], s["performance_rate"]
     ops, lab, mach = s["operators"], s["labour_hourly_cost"], s["machine_hourly_cost"]
     poste_h = mach + lab * ops
@@ -1541,7 +1541,7 @@ def prod_compute():
 
     # ── Quantités & temps annuels (base physique, R1/R2) ────────────────────
     s["quality_rate"] = (1 - s["scrap_rate"]) * (1 - s["rework_rate"])
-    s["pieces_bonnes"] = vol.astype(float)
+    s["pieces_bonnes"] = float(vol)
     s["pieces_produites"] = vol / s["quality_rate"]
     s["temps_fonctionnement_h"] = s["pieces_produites"] * s["cycle_time_sec"] / P / 3600.0
     s["temps_requis_h"] = s["temps_fonctionnement_h"] / D
@@ -1551,7 +1551,7 @@ def prod_compute():
     s["cycle_perf"] = s["cycle_time_sec"] / P               # cycle dégradé performance (capacité)
 
     # ── Goulot par taux de charge (spec 2.4) ────────────────────────────────
-    demande = float(PROD_CAMPAGNE["demande_client_jour"])
+    demande = float(lp["demande"])
     s["capacite_nette_jour"] = (s["ouverture_h_jour"] * 3600.0 * s["nb_machines"] * D) / s["cycle_perf"]
     s["taux_charge"] = demande / s["capacite_nette_jour"]
 
@@ -1582,10 +1582,9 @@ def prod_compute():
     s["m_stocks"] = s["wip_value"] * TAUX_POSSESSION_ANNUEL
 
     # ── Grandeurs de ligne (jamais par poste) ───────────────────────────────
-    fam0 = fams.iloc[0]
-    surprod_units = float(fam0["annual_volume"]) * PROD_CAMPAGNE["taux_surproduction"]
-    m_surprod = surprod_units * float(fam0["standard_cost"]) * TAUX_POSSESSION_ANNUEL
-    comp_h = PROD_CAMPAGNE["heures_competences_an"]
+    surprod_units = float(lp["surprod_units"])
+    m_surprod = surprod_units * sc * TAUX_POSSESSION_ANNUEL
+    comp_h = float(lp["comp_h"])
     m_comp = comp_h * COUT_HORAIRE_MO * ABS
 
     # ── TRS pondéré ligne (spec 2.2 : agréger les temps, pas les ratios) ────
@@ -1661,8 +1660,8 @@ def prod_compute():
         capital=float(s["m_stocks"].sum() + m_surprod),
         d_l=float(d_l), p_l=float(p_l), q_l=float(q_l), trs=float(trs_l),
         takt_s=float(takt_s), demande=demande,
-        prod_reelle=float(PROD_CAMPAGNE["production_reelle_jour"]),
-        otif=float(PROD_CAMPAGNE["otif_client"]),
+        prod_reelle=float(lp["prod_reelle"]),
+        otif=float(lp["otif"]),
         goulot=str(s.loc[bi, "step_name"]), goulot_charge=float(s.loc[bi, "taux_charge"]),
         flow_eff=float(flow_eff), lead_days=float(lead_days), lead_h=float(lead_h),
         va_s=float(va_s_piece),
@@ -1671,6 +1670,118 @@ def prod_compute():
         rework_h=float(s["rework_h"].sum()), m_surprod=float(m_surprod), m_comp=float(m_comp),
         surprod_units=float(surprod_units), comp_h=float(comp_h),
     )
+    return s, mudas, k
+
+
+def _prod_demo_frames():
+    """Jeu de démonstration -> (relevés par poste, paramètres de ligne)."""
+    steps, fams = prod_demo()
+    f = fams.iloc[0]
+    s = steps.merge(fams, on="product_family", how="left")
+    lp = dict(annual_volume=float(f["annual_volume"]), standard_cost=float(f["standard_cost"]),
+              material_cost=float(f["material_cost"]),
+              demande=float(PROD_CAMPAGNE["demande_client_jour"]),
+              prod_reelle=float(PROD_CAMPAGNE["production_reelle_jour"]),
+              otif=float(PROD_CAMPAGNE["otif_client"]),
+              surprod_units=float(f["annual_volume"]) * PROD_CAMPAGNE["taux_surproduction"],
+              comp_h=float(PROD_CAMPAGNE["heures_competences_an"]))
+    return s, lp
+
+
+def _prod_read(sql):
+    """Lecture silencieuse (pas de bandeau d'erreur) : renvoie None si les
+    tables prod_* n'existent pas encore. La connexion est en autocommit, donc
+    une sonde en échec ne bloque pas les requêtes suivantes."""
+    try:
+        return pd.read_sql(sql, get_connection())
+    except Exception:
+        return None
+
+
+def _prod_db_frames():
+    """Back end prod_* -> (relevés par poste, paramètres de ligne), ou None.
+    R1/R2 : la base ne stocke que des temps, des pièces et des quantités ; les
+    taux et les euros sont reconstruits ici."""
+    camp = _prod_read("SELECT * FROM prod_campagnes ORDER BY date_debut DESC LIMIT 1")
+    if camp is None or camp.empty:
+        return None
+    cid = str(camp.iloc[0]["campagne_id"]).replace("'", "''")
+    mes = _prod_read("SELECT m.*, p.poste, p.atelier, p.ligne, p.nb_machines_paralleles, "
+                     "p.temps_ouverture_h_jour, p.cout_horaire_machine, p.cout_horaire_mo, p.operators "
+                     "FROM prod_mesures m JOIN prod_postes p ON p.poste_id = m.poste_id "
+                     "WHERE m.campagne_id = '" + cid + "' ORDER BY m.poste_id")
+    ev = _prod_read("SELECT poste_id, type_muda, quantite, unite, occurrences, commentaire "
+                    "FROM prod_evenements WHERE campagne_id = '" + cid + "'")
+    if mes is None or mes.empty or ev is None or ev.empty:
+        return None
+
+    num = lambda d, c, dv=0.0: pd.to_numeric(d[c], errors="coerce").fillna(dv).astype(float)
+    ev = ev.assign(quantite=pd.to_numeric(ev["quantite"], errors="coerce").fillna(0.0))
+
+    def qty(poste, muda, note=None):
+        m = (ev["poste_id"] == poste) & (ev["type_muda"] == muda)
+        if note is not None:
+            m &= ev["commentaire"].fillna("").str.contains(note, case=False)
+        return float(ev.loc[m, "quantite"].sum())
+
+    produced = num(mes, "pieces_produites").replace(0, pd.NA)
+    rows = []
+    for i, r in mes.reset_index(drop=True).iterrows():
+        pid = r["poste_id"]
+        prod_i = float(r["pieces_produites"]) or 1.0
+        fonc = float(r["temps_fonctionnement_h"]) or 1.0
+        req = float(r["temps_requis_h"]) or 1.0
+        nom = float(r["temps_cycle_nominal_s"])
+        rows.append({
+            "step_order": i + 1, "step_name": r["poste"], "workshop": r["atelier"],
+            "ligne": r["ligne"] if pd.notna(r["ligne"]) else "—",
+            "cycle_time_sec": nom,
+            "value_added_sec": float(r["value_added_sec"] or 0.0),
+            "changeover_min": float(r["changeover_min"] or 0.0),
+            "batch_size": float(r["batch_size"] or 1.0),
+            "wip_units": float(r["wip_units"] or 0.0),
+            # taux reconstruits depuis les mesures physiques (jamais stockés)
+            "availability_rate": fonc / req,
+            "performance_rate": (prod_i * nom / 3600.0) / fonc,
+            "scrap_rate": qty(pid, "defauts", "rebut") / prod_i,
+            "rework_rate": qty(pid, "defauts", "retouche") / prod_i,
+            "transport_sec": qty(pid, "transport") * 3600.0 / prod_i,
+            "motion_sec": qty(pid, "mouvements") * 3600.0 / prod_i,
+            "operators": float(r["operators"] or 1.0),
+            "machine_hourly_cost": float(r["cout_horaire_machine"] or COUT_HORAIRE_MACHINE),
+            "labour_hourly_cost": float(r["cout_horaire_mo"] or COUT_HORAIRE_MO),
+            "nb_machines": float(r["nb_machines_paralleles"] or 1),
+            "ouverture_h_jour": float(r["temps_ouverture_h_jour"] or HEURES_OUVERTURE_JOUR),
+        })
+    s = pd.DataFrame(rows)
+
+    c0 = camp.iloc[0]
+    _f = lambda v, d: float(v) if pd.notna(v) else d
+    lp = dict(annual_volume=_f(c0.get("volume_annuel"), float(num(mes, "pieces_bonnes").max())),
+              standard_cost=_f(c0.get("cout_standard_unitaire"), 0.0),
+              material_cost=_f(c0.get("cout_matiere_unitaire"), 0.0),
+              demande=_f(c0.get("demande_client_jour"), 1.0),
+              prod_reelle=_f(c0.get("production_reelle_jour"), 0.0),
+              otif=_f(c0.get("otif_client"), 0.0),
+              surprod_units=float(ev.loc[ev["type_muda"] == "surproduction", "quantite"].sum()),
+              comp_h=float(ev.loc[ev["type_muda"] == "competences", "quantite"].sum()))
+    if lp["standard_cost"] <= 0:
+        return None
+    return s, lp, str(c0["campagne_id"])
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def prod_compute():
+    """Base si les tables prod_* sont alimentées, sinon jeu de démonstration.
+    Même moteur (_prod_core) dans les deux cas : les écrans ne changent pas."""
+    db = _prod_db_frames()
+    if db is not None:
+        s, mudas, k = _prod_core(db[0], db[1])
+        k["source"], k["campagne"] = "db", db[2]
+        return s, mudas, k
+    s0, lp0 = _prod_demo_frames()
+    s, mudas, k = _prod_core(s0, lp0)
+    k["source"], k["campagne"] = "demo", PROD_CAMPAGNE["campagne"]
     return s, mudas, k
 
 
@@ -3570,6 +3681,16 @@ if _page == T["tab_whatif"]:
 if _page == P_SYNTH:
     st.subheader("📊 " + ("Où le cash se consume sur la ligne" if _PF else "Where cash burns on the line"))
     s, mudas, k = prod_compute()
+    # Source des données : visible sans être un bandeau de chantier (R6).
+    if k.get("source") == "db":
+        _src = ((f"Campagne <b>{_esc(k.get('campagne',''))}</b> · relevés terrain en base" if _PF
+                 else f"Campaign <b>{_esc(k.get('campagne',''))}</b> · field data from database"), "#12b76a")
+    else:
+        _src = (("Jeu de démonstration · aucune campagne en base" if _PF
+                 else "Demonstration dataset · no campaign in database"), "#94a3b8")
+    st.markdown(f'<div style="font-size:11.5px;color:{_src[1]};margin:-8px 0 12px;">'
+                f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;'
+                f'background:{_src[1]};margin-right:6px;"></span>{_src[0]}</div>', unsafe_allow_html=True)
     prod_natures_note()
 
     # ── Sélecteur de période (spec 3.1) ─────────────────────────────────────
