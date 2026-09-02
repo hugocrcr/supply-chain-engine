@@ -48,6 +48,12 @@ HEURES_OUVERTURE_JOUR    = 15.0   # 2 équipes
 PART_SURTRAITEMENT_NONVA = 0.25   # part du temps hors VA comptée en sur-traitement
 TAUX_ARRETS_PLANIFIES    = 0.05   # part d'ouverture en arrêts planifiés (requis = ouverture × (1 − taux))
 
+# Doctrine David §5 — la valorisation de la capacité passe par l'arbre E1→E6.
+MARGE_COUT_VARIABLE_UNITAIRE = 45.0   # € / pièce, marge sur coût variable (contrôle de gestion)
+SEUIL_CONTRAINTE             = 0.95   # taux de charge au-delà duquel un poste est contraint
+# TAUX_ABSORPTION_DEMANDE reste utilisé, mais UNIQUEMENT en repli quand E5/E6
+# ne peuvent trancher (charge/capacité absentes) — méthode 'absorption_globale'.
+
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title=f"SupplyStack — {CLIENT_NAME}",
@@ -766,7 +772,7 @@ def _attr(s):
 
 
 def render_table(df, formats=None, aligns=None, cell_style=None, index=False,
-                 height=None, wrap=None, zebra=True):
+                 height=None, wrap=None, zebra=True, raw_html=None):
     if df is None or len(df) == 0:
         st.markdown(f'<div style="padding:14px;color:#94a3b8;font-size:13px;">{T["no_data"]}</div>',
                     unsafe_allow_html=True)
@@ -777,9 +783,13 @@ def render_table(df, formats=None, aligns=None, cell_style=None, index=False,
     wrap = set(wrap or [])
     cols = list(df.columns)
 
+    _raw = set(raw_html or [])          # colonnes dont le HTML est déjà construit
+
     def fmt(col, v):
         if v is None or (isinstance(v, float) and pd.isna(v)):
             return ""
+        if col in _raw:                  # badge déjà assaini par le code appelant
+            return str(v)
         f = formats.get(col)
         if f is None:
             return _esc(v)
@@ -1479,12 +1489,139 @@ N_CONST = ("Pertes économiques constatées" if _PF else "Booked economic losses
 N_CAPA  = ("Capacité valorisée non exploitée" if _PF else "Unexploited valued capacity")
 N_CAPI  = ("Capital immobilisé" if _PF else "Capital tied up")
 PROD_NATURE_COLOR = {N_CONST: "#e5484d", N_CAPA: "#f79009", N_CAPI: "#6355ff"}
+NATURE_UI = {NAT_CONST: N_CONST, NAT_CAPA: N_CAPA, NAT_CAPI: N_CAPI}
 
 st.markdown("""
 <style>
     .kpi-capital .kpi-dot { background: #6355ff; } .kpi-capital .kpi-value { color: #6355ff; }
 </style>
 """, unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DOCTRINE ET FONCTION DE VALORISATION  (dictionnaire de données §1, §3.5, §5)
+#
+# valoriser_evenement() est le POINT UNIQUE de conversion d'une quantité
+# physique en euros. Aucun autre endroit du code ne le fait.
+#
+# Invariant §5.4 : un événement produit AU PLUS UNE ligne par nature économique.
+# Un même arrêt peut coûter des heures payées (constate) ET du manque à produire
+# (capacite) — ce ne sont pas les mêmes euros — mais jamais deux fois la même.
+# ══════════════════════════════════════════════════════════════════════════════
+NAT_CONST, NAT_CAPA, NAT_CAPI = "constate", "capacite", "capital"
+
+PROD_DOCTRINE = {
+    "defauts":        dict(fr="Défauts", en="Defects", unite="pieces", nature=NAT_CONST),
+    "attente":        dict(fr="Attente", en="Waiting", unite="heures", nature=NAT_CAPA),
+    "transport":      dict(fr="Transport", en="Transport", unite="heures", nature=NAT_CAPA),
+    "sur_traitement": dict(fr="Sur-traitement", en="Over-processing", unite="heures", nature=NAT_CAPA),
+    "mouvements":     dict(fr="Mouvements", en="Motion", unite="heures", nature=NAT_CAPA),
+    "competences":    dict(fr="Sous-utilisation des compétences", en="Skill under-use", unite="heures", nature=NAT_CAPA),
+    "surproduction":  dict(fr="Surproduction", en="Overproduction", unite="unites", nature=NAT_CAPI),
+    "stocks_encours": dict(fr="Stocks / encours", en="Inventory / WIP", unite="unites", nature=NAT_CAPI),
+}
+# NATURE_UI est renseigné juste après la définition de N_CONST / N_CAPA / N_CAPI
+
+METHODES_FINES = {"E3_cout_direct", "E5_non_contraint", "E6_recuperable",
+                  "E6_perte_ferme", "E2_aucune_ressource", "portage", "defauts_directs"}
+
+
+def indice_confiance(source, niveau_cout):
+    """§1.3 — ★★★ = mesuré/système ET coût client validé. ★ = dès qu'un axe est estimatif."""
+    s = (source or "E").upper()
+    n = (niveau_cout or "C").upper()
+    if s in ("M", "S") and n == "A":
+        return 3
+    if (s in ("M", "S") and n == "B") or (s == "E" and n == "A"):
+        return 2
+    return 1
+
+
+def etoiles(conf):
+    return "★" * int(conf) + "☆" * (3 - int(conf))
+
+
+def valoriser_evenement(ev, poste, mesure, cfg=None):
+    """Quantité physique -> euros, selon l'arbre E1→E6 du dictionnaire §5.
+
+    ev     : type_muda, quantite, unite, duree_arret_h, ressource_bloquee,
+             operateur_reaffecte, recuperable_avant_echeance, source, niveau_cout,
+             cout_unitaire (mudas 'capital'), rebut_pcs / retouche_h (défauts)
+    poste  : cout_horaire_mo, cout_horaire_machine, nb_operateurs, nb_machines
+    mesure : charge_requise_h, capacite_nette_h, temps_cycle_effectif_s
+
+    Retourne une liste de lignes {nature, montant, methode, confiance} —
+    au plus une par nature (invariant §5.4)."""
+    c = cfg or dict(marge=MARGE_COUT_VARIABLE_UNITAIRE, seuil=SEUIL_CONTRAINTE,
+                    absorption=TAUX_ABSORPTION_DEMANDE, possession=TAUX_POSSESSION_ANNUEL)
+    muda = ev["type_muda"]
+    doc = PROD_DOCTRINE.get(muda, dict(nature=NAT_CAPA))
+    src, niv = ev.get("source", "E"), ev.get("niveau_cout", "C")
+    conf = int(ev.get("confiance") or indice_confiance(src, niv))
+    L = lambda nature, montant, methode, cf=None: dict(
+        nature=nature, montant=float(max(montant, 0.0)), methode=methode, confiance=int(cf or conf))
+
+    # ── Capital immobilisé : valeur × taux de portage ────────────────────────
+    if doc["nature"] == NAT_CAPI:
+        val = float(ev["quantite"]) * float(ev.get("cout_unitaire", 0.0))
+        return [L(NAT_CAPI, val * c["possession"], "portage")]
+
+    # ── Défauts : décaissement réel (matière au coût cumulé + retouche payée) ─
+    if muda == "defauts":
+        mat = float(ev.get("rebut_pcs", 0.0)) * float(ev.get("cout_unitaire", 0.0))
+        mo = float(ev.get("retouche_h", 0.0)) * float(poste.get("cout_horaire_mo", COUT_HORAIRE_MO)) \
+            * float(poste.get("nb_operateurs", 1))
+        return [L(NAT_CONST, mat + mo, "defauts_directs")]
+
+    # ── Mudas de temps : E1 → E6 ─────────────────────────────────────────────
+    duree = float(ev.get("duree_arret_h") or ev.get("quantite") or 0.0)
+    ressource = str(ev.get("ressource_bloquee") or "les_deux")
+    reaffecte = bool(ev.get("operateur_reaffecte", False))
+
+    # E2 — aucune ressource bloquée : 0 €, résultat VALIDE (pas une absence de données)
+    if ressource == "aucune":
+        return [L(doc["nature"], 0.0, "E2_aucune_ressource")]
+
+    lignes = []
+    # E3 — coût direct : l'opérateur est immobilisé et n'a pas été réaffecté
+    if not reaffecte:
+        mo_h = float(poste.get("cout_horaire_mo", COUT_HORAIRE_MO)) * float(poste.get("nb_operateurs", 1))
+        lignes.append(L(NAT_CONST, duree * mo_h, "E3_cout_direct"))
+
+    # E4/E5/E6 — capacité, seulement si la machine est bloquée
+    if ressource in ("machine", "les_deux"):
+        charge = mesure.get("charge_requise_h")
+        capa = mesure.get("capacite_nette_h")
+        cycle_eff = float(mesure.get("temps_cycle_effectif_s") or 0.0)
+        if charge and capa and float(capa) > 0:
+            taux = float(charge) / float(capa)
+            if taux < c["seuil"]:
+                # E5 — poste non contraint : le travail se termine quand même
+                lignes.append(L(NAT_CAPA, 0.0, "E5_non_contraint"))
+            elif ev.get("recuperable_avant_echeance"):
+                # E6 — la perte est rattrapée avant l'échéance
+                lignes.append(L(NAT_CAPA, 0.0, "E6_recuperable"))
+            else:
+                # E4 puis E6 — perte ferme de production sur un poste contraint
+                pieces = (duree * 3600.0 / cycle_eff) if cycle_eff > 0 else 0.0
+                nbm = float(poste.get("nb_machines", 1) or 1)
+                if nbm > 1:
+                    pieces /= nbm
+                lignes.append(L(NAT_CAPA, pieces * c["marge"], "E6_perte_ferme"))
+        else:
+            # Repli §5.3 — charge/capacité inconnues : ancienne méthode, confiance ★
+            poste_h = (float(poste.get("cout_horaire_machine", COUT_HORAIRE_MACHINE))
+                       + float(poste.get("cout_horaire_mo", COUT_HORAIRE_MO)) * float(poste.get("nb_operateurs", 1)))
+            lignes.append(L(NAT_CAPA, duree * poste_h * c["absorption"], "absorption_globale", 1))
+
+    # Invariant §5.4 — au plus une ligne par nature
+    vues, out = set(), []
+    for l in lignes:
+        if l["nature"] in vues:
+            continue
+        vues.add(l["nature"])
+        out.append(l)
+    return out
+
 
 # ── Paramètres de la campagne de mesure (relevés terrain, pas des coefficients)
 PROD_CAMPAGNE = {
@@ -1527,7 +1664,7 @@ def prod_demo():
     return steps, families
 
 
-def _prod_core(s, lp):
+def _prod_core(s, lp, evts_db=None):
     """Moteur unique de calcul — alimenté soit par la démo, soit par la base.
     temps → ratios (R2), quantités physiques → euros (R1), une nature par muda
     (R3), aucun total inter-natures (R4).
@@ -1566,26 +1703,87 @@ def _prod_core(s, lp):
     s["surtraitement_h"] = s["pieces_produites"] * (PART_SURTRAITEMENT_NONVA * nonva) / 3600.0
     s["wip_value"] = s["wip_units"] * sc
 
-    # ── Valorisation (R1, coefficients R5) ──────────────────────────────────
+    # ── Valorisation : TOUT passe par valoriser_evenement (dictionnaire §5) ──
     tot_va = s["value_added_sec"].sum()
     s["cost_at_step"] = mat + (s["value_added_sec"].cumsum() / tot_va) * (sc - mat)
-    ABS = TAUX_ABSORPTION_DEMANDE
-    # constaté : décaissements réels — matière au coût cumulé + heures de retouche payées
-    s["m_defauts"] = s["rebut_pcs"] * s["cost_at_step"] + s["rework_h"] * lab * ops
-    # capacité : heures × coût horaire × absorption (garde-fou central)
-    s["m_attente"] = s["downtime_h"] * poste_h * ABS
-    s["m_transport"] = s["transport_h"] * lab * ops * ABS
-    s["m_surtraitement"] = s["surtraitement_h"] * poste_h * ABS
-    s["m_mouvements"] = s["motion_h"] * lab * ops * ABS
-    s["m_capacite"] = s[["m_attente", "m_transport", "m_surtraitement", "m_mouvements"]].sum(axis=1)
-    # capital : valeur immobilisée × taux de possession
-    s["m_stocks"] = s["wip_value"] * TAUX_POSSESSION_ANNUEL
+    # Charge/capacité par poste : ce sont elles qui permettent à E5 de trancher.
+    # Charge et capacité annuelles — MÊME définition que le taux de charge affiché
+    # comme goulot, sinon E5 trancherait sur un critère différent de l'écran.
+    s["capacite_nette_h"] = s["ouverture_h_jour"] * JOURS_OUVRES_AN * s["nb_machines"] * D
+    s["charge_requise_h"] = demande * JOURS_OUVRES_AN * s["cycle_perf"] / 3600.0
 
-    # ── Grandeurs de ligne (jamais par poste) ───────────────────────────────
+    _evts = []            # journal des événements valorisés (base des mudas)
+    for _, r in (s.iterrows() if evts_db is None else []):
+        poste = dict(cout_horaire_mo=r["labour_hourly_cost"], cout_horaire_machine=r["machine_hourly_cost"],
+                     nb_operateurs=r["operators"], nb_machines=r["nb_machines"])
+        mesure = dict(charge_requise_h=r["charge_requise_h"], capacite_nette_h=r["capacite_nette_h"],
+                      temps_cycle_effectif_s=r["eff_cycle"])
+        base = dict(poste=r["step_name"], workshop=r["workshop"],
+                    source=r.get("source", "M"), niveau_cout=r.get("niveau_cout", "B"))
+        # défauts — décaissement réel, rebut valorisé au coût cumulé de l'étape
+        _evts.append((dict(type_muda="defauts", quantite=r["rebut_pcs"] + r["retouche_pcs"],
+                           unite="pieces", occurrences=int(max(1, r["rebut_pcs"] / 12)),
+                           rebut_pcs=r["rebut_pcs"], retouche_h=r["rework_h"],
+                           cout_unitaire=r["cost_at_step"], **base), poste, mesure))
+        # mudas de temps — l'arbre E1→E6 décide si la capacité vaut quelque chose
+        # Distinction de doctrine (§5.1) :
+        #  · attente = l'opérateur est OISIF et payé -> coût direct constaté (E3)
+        #    + test de capacité si la machine est bloquée
+        #  · transport / mouvements / sur-traitement = heures TRAVAILLÉES sans valeur.
+        #    Les supprimer ne rembourse aucun salaire, cela libère de la capacité :
+        #    pas de coût MO (opérateur occupé), on passe directement à E5/E6.
+        for muda, h, ress, reaff in [("attente", r["downtime_h"], "les_deux", False),
+                                     ("transport", r["transport_h"], "machine", True),
+                                     ("mouvements", r["motion_h"], "machine", True),
+                                     ("sur_traitement", r["surtraitement_h"], "machine", True)]:
+            _evts.append((dict(type_muda=muda, quantite=h, unite="heures", duree_arret_h=h,
+                               occurrences=int(max(1, h / 2)), ressource_bloquee=ress,
+                               operateur_reaffecte=reaff, **base), poste, mesure))
+        # encours devant le poste — capital immobilisé
+        # Encours valorisés au coût CUMULÉ à l'étape (cohérent avec le chemin base) :
+        # une pièce en attente devant l'assemblage vaut plus qu'une devant le sciage.
+        _evts.append((dict(type_muda="stocks_encours", quantite=r["wip_units"], unite="unites",
+                           occurrences=1, cout_unitaire=r["cost_at_step"], **base), poste, mesure))
+
+    # Grandeurs de LIGNE (une seule fois, jamais par poste)
     surprod_units = float(lp["surprod_units"])
-    m_surprod = surprod_units * sc * TAUX_POSSESSION_ANNUEL
     comp_h = float(lp["comp_h"])
-    m_comp = comp_h * COUT_HORAIRE_MO * ABS
+    _line_poste = dict(cout_horaire_mo=COUT_HORAIRE_MO, cout_horaire_machine=COUT_HORAIRE_MACHINE,
+                       nb_operateurs=1, nb_machines=1)
+    if evts_db is not None:
+        _evts = evts_db            # événements qualifiés lus en base (§3.4)
+        surprod_units = float(sum(e[0]["quantite"] for e in evts_db if e[0]["type_muda"] == "surproduction"))
+        comp_h = float(sum(e[0]["quantite"] for e in evts_db if e[0]["type_muda"] == "competences"))
+    else:
+        _evts.append((dict(type_muda="surproduction", quantite=surprod_units, unite="unites",
+                           occurrences=14, cout_unitaire=sc, poste=None, workshop=None,
+                           source="E", niveau_cout="C"), _line_poste, {}))
+        # Compétences : heures qualifiées sur tâches sans valeur — travaillées, donc
+        # capacité (repli absorption : aucune charge/capacité rattachée à un poste).
+        _evts.append((dict(type_muda="competences", quantite=comp_h, unite="heures", duree_arret_h=comp_h,
+                           occurrences=210, ressource_bloquee="machine", operateur_reaffecte=True,
+                           poste=None, workshop=None, source="E", niveau_cout="C"), _line_poste, {}))
+
+    # Exécution de la valorisation — point unique de conversion en euros
+    _lig = []
+    for ev, poste, mesure in _evts:
+        for l in valoriser_evenement(ev, poste, mesure):
+            _lig.append(dict(poste=ev.get("poste"), workshop=ev.get("workshop"),
+                             type_muda=ev["type_muda"], quantite=float(ev["quantite"]),
+                             unite=ev["unite"], occurrences=int(ev.get("occurrences", 1)),
+                             heures=float(ev.get("duree_arret_h") or 0.0), **l))
+    lignes = pd.DataFrame(_lig)
+
+    # Report par poste (pour les tableaux et le graphe par atelier)
+    _pv = lignes[lignes["poste"].notna()].pivot_table(
+        index="poste", columns="nature", values="montant", aggfunc="sum").reindex(s["step_name"]).fillna(0.0)
+    for _n, _c in [(NAT_CONST, "m_defauts"), (NAT_CAPA, "m_capacite"), (NAT_CAPI, "m_stocks")]:
+        s[_c] = (_pv[_n].values if _n in _pv.columns else 0.0)
+    m_surprod = float(lignes.loc[lignes["type_muda"] == "surproduction", "montant"].sum())
+    m_comp = float(lignes.loc[lignes["type_muda"] == "competences", "montant"].sum())
+    # Totaux par nature : lus sur les lignes valorisées, jamais recomposés ailleurs
+    _nat_tot = lignes.groupby("nature")["montant"].sum()
+    _tot = lambda n: float(_nat_tot.get(n, 0.0))
 
     # ── TRS pondéré ligne (spec 2.2 : agréger les temps, pas les ratios) ────
     d_l = s["temps_fonctionnement_h"].sum() / s["temps_requis_h"].sum()
@@ -1607,43 +1805,40 @@ def _prod_core(s, lp):
 
     bi = s["taux_charge"].idxmax()
 
-    # ── Les huit mudas : quantité physique | unité | heures | € | nature ────
+    # ── Les huit mudas, reconstitués depuis les événements valorisés ────────
+    # Chaque ligne porte sa quantité physique, sa nature UNIQUE, la méthode de
+    # valorisation retenue (E5/E6 ou repli) et l'indice de confiance.
     F = (lambda a, b: a if _PF else b)
-    mudas = pd.DataFrame([
-        dict(key="defauts", muda=F("Défauts", "Defects"),
-             qty=s["rebut_pcs"].sum() + s["retouche_pcs"].sum(),
-             qty_label=f"{s['rebut_pcs'].sum():,.0f} " + F("rebuts + ", "scrapped + ") + f"{s['retouche_pcs'].sum():,.0f} " + F("retouches", "reworked"),
-             unite=F("pièces", "pieces"), occurrences=496, heures=s["rework_h"].sum(),
-             value=s["m_defauts"].sum(), nature=N_CONST),
-        dict(key="attente", muda=F("Attente", "Waiting"),
-             qty=s["downtime_h"].sum(), qty_label=f"{s['downtime_h'].sum():,.0f} h",
-             unite=F("heures", "hours"), occurrences=850, heures=s["downtime_h"].sum(),
-             value=s["m_attente"].sum(), nature=N_CAPA),
-        dict(key="sur_traitement", muda=F("Sur-traitement", "Over-processing"),
-             qty=s["surtraitement_h"].sum(), qty_label=f"{s['surtraitement_h'].sum():,.0f} h",
-             unite=F("heures", "hours"), occurrences=3100, heures=s["surtraitement_h"].sum(),
-             value=s["m_surtraitement"].sum(), nature=N_CAPA),
-        dict(key="mouvements", muda=F("Mouvements", "Motion"),
-             qty=s["motion_h"].sum(), qty_label=f"{s['motion_h'].sum():,.0f} h",
-             unite=F("heures", "hours"), occurrences=12500, heures=s["motion_h"].sum(),
-             value=s["m_mouvements"].sum(), nature=N_CAPA),
-        dict(key="transport", muda=F("Transport", "Transport"),
-             qty=s["transport_h"].sum(), qty_label=f"{s['transport_h'].sum():,.0f} h",
-             unite=F("heures", "hours"), occurrences=2400, heures=s["transport_h"].sum(),
-             value=s["m_transport"].sum(), nature=N_CAPA),
-        dict(key="competences", muda=F("Sous-utilisation des compétences", "Skill under-use"),
-             qty=comp_h, qty_label=f"{comp_h:,.0f} h",
-             unite=F("heures", "hours"), occurrences=210, heures=comp_h,
-             value=m_comp, nature=N_CAPA),
-        dict(key="stocks_encours", muda=F("Stocks / encours", "Inventory / WIP"),
-             qty=s["wip_units"].sum(), qty_label=f"{s['wip_units'].sum():,.0f} " + F("unités", "units"),
-             unite=F("unités", "units"), occurrences=8, heures=0.0,
-             value=s["m_stocks"].sum(), nature=N_CAPI),
-        dict(key="surproduction", muda=F("Surproduction", "Overproduction"),
-             qty=surprod_units, qty_label=f"{surprod_units:,.0f} " + F("unités", "units"),
-             unite=F("unités", "units"), occurrences=14, heures=0.0,
-             value=m_surprod, nature=N_CAPI),
-    ])
+    _g = lignes.groupby(["type_muda", "nature"]).agg(
+        qty=("quantite", "sum"), occurrences=("occurrences", "sum"),
+        heures=("heures", "sum"), value=("montant", "sum"),
+        confiance=("confiance", "min")).reset_index()
+    # méthode dominante d'un couple (muda, nature), pondérée par le montant
+    _meth = (lignes.groupby(["type_muda", "nature", "methode"])["montant"].sum()
+             .reset_index().sort_values("montant", ascending=False)
+             .drop_duplicates(subset=["type_muda", "nature"])
+             .set_index(["type_muda", "nature"])["methode"])
+
+    _UNI = {"pieces": F("pièces", "pieces"), "heures": F("heures", "hours"), "unites": F("unités", "units")}
+    rows = []
+    for _, r in _g.iterrows():
+        key, nat = r["type_muda"], r["nature"]
+        doc = PROD_DOCTRINE.get(key, {})
+        uni = _UNI.get(doc.get("unite", "heures"), doc.get("unite", ""))
+        if key == "defauts":
+            lbl = (f"{s['rebut_pcs'].sum():,.0f} " + F("rebuts + ", "scrapped + ")
+                   + f"{s['retouche_pcs'].sum():,.0f} " + F("retouches", "reworked"))
+        elif doc.get("unite") == "heures":
+            lbl = f"{r['qty']:,.0f} h"
+        else:
+            lbl = f"{r['qty']:,.0f} {uni}"
+        rows.append(dict(key=key, muda=(doc.get("fr") if _PF else doc.get("en")) or key,
+                         qty=float(r["qty"]), qty_label=lbl, unite=uni,
+                         occurrences=int(r["occurrences"]), heures=float(r["heures"]),
+                         value=float(r["value"]), confiance=int(r["confiance"]),
+                         methode=str(_meth.get((key, nat), "—")),
+                         nature=NATURE_UI[nat]))
+    mudas = pd.DataFrame(rows).sort_values("value", ascending=False).reset_index(drop=True)
 
     # récupérabilité (démo : indices saisis ; gain constaté = campagne suivante, R6)
     _evit = {"defauts": .62, "attente": .70, "transport": .55, "sur_traitement": .40,
@@ -1655,9 +1850,7 @@ def _prod_core(s, lp):
     mudas["effort"] = mudas["key"].map(_effort)
 
     k = dict(
-        constate=float(s["m_defauts"].sum()),
-        capacite=float(s["m_capacite"].sum() + m_comp),
-        capital=float(s["m_stocks"].sum() + m_surprod),
+        constate=_tot(NAT_CONST), capacite=_tot(NAT_CAPA), capital=_tot(NAT_CAPI),
         d_l=float(d_l), p_l=float(p_l), q_l=float(q_l), trs=float(trs_l),
         takt_s=float(takt_s), demande=demande,
         prod_reelle=float(lp["prod_reelle"]),
@@ -1699,24 +1892,39 @@ def _prod_read(sql):
 
 
 def _prod_db_frames():
-    """Back end prod_* -> (relevés par poste, paramètres de ligne), ou None.
-    R1/R2 : la base ne stocke que des temps, des pièces et des quantités ; les
-    taux et les euros sont reconstruits ici."""
+    """Back end prod_* -> (relevés par poste, paramètres de ligne, campagne, événements).
+    R1/R2 : la base ne stocke que des temps, des pièces et des quantités physiques ;
+    les taux et les euros sont reconstruits ici. Les événements arrivent QUALIFIÉS
+    (ressource bloquée, réaffectation, source, niveau de coût) : c'est ce qui permet
+    à l'arbre E1→E6 de trancher au lieu de retomber sur le repli."""
     camp = _prod_read("SELECT * FROM prod_campagnes ORDER BY date_debut DESC LIMIT 1")
     if camp is None or camp.empty:
         return None
     cid = str(camp.iloc[0]["campagne_id"]).replace("'", "''")
     mes = _prod_read("SELECT m.*, p.poste, p.atelier, p.ligne, p.nb_machines_paralleles, "
-                     "p.temps_ouverture_h_jour, p.cout_horaire_machine, p.cout_horaire_mo, p.operators "
+                     "p.temps_ouverture_h_jour, p.cout_horaire_machine, p.cout_horaire_mo, "
+                     "p.operators, p.nb_operateurs "
                      "FROM prod_mesures m JOIN prod_postes p ON p.poste_id = m.poste_id "
                      "WHERE m.campagne_id = '" + cid + "' ORDER BY m.poste_id")
-    ev = _prod_read("SELECT poste_id, type_muda, quantite, unite, occurrences, commentaire "
-                    "FROM prod_evenements WHERE campagne_id = '" + cid + "'")
+    ev = _prod_read("SELECT * FROM prod_evenements WHERE campagne_id = '" + cid + "'")
     if mes is None or mes.empty or ev is None or ev.empty:
         return None
+    # Encours : mesurés POSTE PAR POSTE dans prod_mesures.wip_units (source complète).
+    # prod_encours décrit les liaisons inter-opérations pour la cartographie — s'en
+    # servir ici raterait l'encours du premier poste, qui n'a pas de liaison amont.
+    if "wip_units" in mes.columns and "stocks_encours" not in set(ev["type_muda"]):
+        _w = mes[["poste_id", "wip_units"]].copy()
+        _w["wip_units"] = pd.to_numeric(_w["wip_units"], errors="coerce").fillna(0.0)
+        _w = _w[_w["wip_units"] > 0]
+        if not _w.empty:
+            ev = pd.concat([ev, pd.DataFrame({
+                "campagne_id": cid, "poste_id": _w["poste_id"], "type_muda": "stocks_encours",
+                "quantite": _w["wip_units"], "unite": "unites", "occurrences": 1,
+                "source": "M", "niveau_cout": "B"})], ignore_index=True)
 
-    num = lambda d, c, dv=0.0: pd.to_numeric(d[c], errors="coerce").fillna(dv).astype(float)
+    _f = lambda v, d=0.0: (float(v) if pd.notna(v) else d)
     ev = ev.assign(quantite=pd.to_numeric(ev["quantite"], errors="coerce").fillna(0.0))
+    _has = lambda c: c in ev.columns
 
     def qty(poste, muda, note=None):
         m = (ev["poste_id"] == poste) & (ev["type_muda"] == muda)
@@ -1724,142 +1932,127 @@ def _prod_db_frames():
             m &= ev["commentaire"].fillna("").str.contains(note, case=False)
         return float(ev.loc[m, "quantite"].sum())
 
-    produced = num(mes, "pieces_produites").replace(0, pd.NA)
+    # ── Relevés par poste : les taux se déduisent des temps mesurés ──────────
     rows = []
     for i, r in mes.reset_index(drop=True).iterrows():
         pid = r["poste_id"]
-        prod_i = float(r["pieces_produites"]) or 1.0
-        fonc = float(r["temps_fonctionnement_h"]) or 1.0
-        req = float(r["temps_requis_h"]) or 1.0
-        nom = float(r["temps_cycle_nominal_s"])
+        prod_i = _f(r["pieces_produites"], 1.0) or 1.0
+        fonc = _f(r["temps_fonctionnement_h"], 1.0) or 1.0
+        req = _f(r["temps_requis_h"], 1.0) or 1.0
+        nom = _f(r["temps_cycle_nominal_s"])
         rows.append({
             "step_order": i + 1, "step_name": r["poste"], "workshop": r["atelier"],
             "ligne": r["ligne"] if pd.notna(r["ligne"]) else "—",
+            "poste_id": pid,
             "cycle_time_sec": nom,
-            "value_added_sec": float(r["value_added_sec"] or 0.0),
-            "changeover_min": float(r["changeover_min"] or 0.0),
-            "batch_size": float(r["batch_size"] or 1.0),
-            "wip_units": float(r["wip_units"] or 0.0),
-            # taux reconstruits depuis les mesures physiques (jamais stockés)
+            "value_added_sec": _f(r.get("value_added_sec")),
+            "changeover_min": _f(r.get("changeover_min")),
+            "batch_size": _f(r.get("batch_size"), 1.0) or 1.0,
+            "wip_units": _f(r.get("wip_units")),
             "availability_rate": fonc / req,
             "performance_rate": (prod_i * nom / 3600.0) / fonc,
             "scrap_rate": qty(pid, "defauts", "rebut") / prod_i,
             "rework_rate": qty(pid, "defauts", "retouche") / prod_i,
             "transport_sec": qty(pid, "transport") * 3600.0 / prod_i,
             "motion_sec": qty(pid, "mouvements") * 3600.0 / prod_i,
-            "operators": float(r["operators"] or 1.0),
-            "machine_hourly_cost": float(r["cout_horaire_machine"] or COUT_HORAIRE_MACHINE),
-            "labour_hourly_cost": float(r["cout_horaire_mo"] or COUT_HORAIRE_MO),
-            "nb_machines": float(r["nb_machines_paralleles"] or 1),
-            "ouverture_h_jour": float(r["temps_ouverture_h_jour"] or HEURES_OUVERTURE_JOUR),
+            "operators": _f(r.get("nb_operateurs"), _f(r.get("operators"), 1.0)) or 1.0,
+            "machine_hourly_cost": _f(r.get("cout_horaire_machine"), COUT_HORAIRE_MACHINE),
+            "labour_hourly_cost": _f(r.get("cout_horaire_mo"), COUT_HORAIRE_MO),
+            "nb_machines": _f(r.get("nb_machines_paralleles"), 1.0) or 1.0,
+            "ouverture_h_jour": _f(r.get("temps_ouverture_h_jour"), HEURES_OUVERTURE_JOUR),
+            "source": (r.get("source") if pd.notna(r.get("source")) else "M"),
+            # charge/capacité ERP quand elles existent : sans elles E5 ne peut trancher
+            "db_charge_h": (_f(r.get("charge_requise_h")) if pd.notna(r.get("charge_requise_h")) else None),
+            "db_capa_h": (_f(r.get("capacite_nette_h")) if pd.notna(r.get("capacite_nette_h")) else None),
         })
     s = pd.DataFrame(rows)
 
     c0 = camp.iloc[0]
-    _f = lambda v, d: float(v) if pd.notna(v) else d
-    lp = dict(annual_volume=_f(c0.get("volume_annuel"), float(num(mes, "pieces_bonnes").max())),
-              standard_cost=_f(c0.get("cout_standard_unitaire"), 0.0),
-              material_cost=_f(c0.get("cout_matiere_unitaire"), 0.0),
-              demande=_f(c0.get("demande_client_jour"), 1.0),
-              prod_reelle=_f(c0.get("production_reelle_jour"), 0.0),
-              otif=_f(c0.get("otif_client"), 0.0),
+    lp = dict(annual_volume=_f(c0.get("volume_annuel"), float(pd.to_numeric(mes["pieces_bonnes"], errors="coerce").max())),
+              standard_cost=_f(c0.get("cout_standard_unitaire")),
+              material_cost=_f(c0.get("cout_matiere_unitaire")),
+              demande=_f(c0.get("demande_client_jour"), 1.0) or 1.0,
+              prod_reelle=_f(c0.get("production_reelle_jour")),
+              otif=_f(c0.get("otif_client")),
               surprod_units=float(ev.loc[ev["type_muda"] == "surproduction", "quantite"].sum()),
               comp_h=float(ev.loc[ev["type_muda"] == "competences", "quantite"].sum()))
     if lp["standard_cost"] <= 0:
         return None
-    return s, lp, str(c0["campagne_id"])
+    return s, lp, str(c0["campagne_id"]), ev
+
+
+def _prod_db_events(s, lp, ev):
+    """Événements de prod_evenements -> triplets (ev, poste, mesure) pour la
+    valorisation. Les champs de qualification absents prennent un défaut prudent :
+    l'arbre bascule alors sur le repli et l'indice de confiance tombe à ★."""
+    _f = lambda v, d=0.0: (float(v) if pd.notna(v) else d)
+    idx = s.set_index("poste_id") if "poste_id" in s.columns else s.set_index("step_name")
+    tot_va = s["value_added_sec"].sum() or 1.0
+    cost_at = (lp["material_cost"] + (s["value_added_sec"].cumsum() / tot_va)
+               * (lp["standard_cost"] - lp["material_cost"]))
+    cost_at.index = idx.index
+    out = []
+    for _, e in ev.iterrows():
+        pid = e.get("poste_id")
+        muda = str(e["type_muda"])
+        known = pd.notna(pid) and pid in idx.index
+        if known:
+            r = idx.loc[pid]
+            poste = dict(cout_horaire_mo=r["labour_hourly_cost"], cout_horaire_machine=r["machine_hourly_cost"],
+                         nb_operateurs=r["operators"], nb_machines=r["nb_machines"])
+            charge = r["db_charge_h"] if r["db_charge_h"] else (
+                lp["demande"] * JOURS_OUVRES_AN * (r["cycle_time_sec"] / max(r["performance_rate"], 1e-9)) / 3600.0)
+            capa = r["db_capa_h"] if r["db_capa_h"] else (
+                r["ouverture_h_jour"] * JOURS_OUVRES_AN * r["nb_machines"] * r["availability_rate"])
+            mesure = dict(charge_requise_h=charge, capacite_nette_h=capa,
+                          temps_cycle_effectif_s=r["cycle_time_sec"] / max(r["availability_rate"] * r["performance_rate"], 1e-9))
+            # Encours valorisés au coût CUMULÉ à l'étape (une pièce en attente devant
+            # l'assemblage vaut plus qu'une pièce devant le sciage), jamais au standard plein.
+            cu = float(cost_at.loc[pid])
+            wname, pname = r["workshop"], r["step_name"]
+        else:
+            poste = dict(cout_horaire_mo=COUT_HORAIRE_MO, cout_horaire_machine=COUT_HORAIRE_MACHINE,
+                         nb_operateurs=1, nb_machines=1)
+            mesure, cu, wname, pname = {}, lp["standard_cost"], None, None
+
+        note = str(e.get("commentaire") or "")
+        qte = float(e["quantite"])
+        d = dict(type_muda=muda, quantite=qte, unite=str(e.get("unite") or "heures"),
+                 occurrences=int(_f(e.get("occurrences"), 1.0)), poste=pname, workshop=wname,
+                 cout_unitaire=cu,
+                 source=(e.get("source") if pd.notna(e.get("source")) else "E"),
+                 niveau_cout=(e.get("niveau_cout") if pd.notna(e.get("niveau_cout")) else "C"))
+        if muda == "defauts":
+            if "retouche" in note.lower() and known:
+                d.update(rebut_pcs=0.0, retouche_h=qte * float(r["value_added_sec"]) / 3600.0)
+            else:
+                d.update(rebut_pcs=qte, retouche_h=0.0)
+        else:
+            d.update(duree_arret_h=_f(e.get("duree_arret_h"), qte),
+                     ressource_bloquee=(e.get("ressource_bloquee") if pd.notna(e.get("ressource_bloquee"))
+                                        else ("les_deux" if muda == "attente" else "machine")),
+                     operateur_reaffecte=(bool(e["operateur_reaffecte"]) if pd.notna(e.get("operateur_reaffecte"))
+                                          else (muda != "attente")),
+                     recuperable_avant_echeance=(bool(e["recuperable_avant_echeance"])
+                                                 if pd.notna(e.get("recuperable_avant_echeance")) else False))
+        out.append((d, poste, mesure))
+    return out
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def prod_compute():
     """Base si les tables prod_* sont alimentées, sinon jeu de démonstration.
-    Même moteur (_prod_core) dans les deux cas : les écrans ne changent pas."""
+    Même moteur (_prod_core) et même doctrine E1→E6 dans les deux cas."""
     db = _prod_db_frames()
     if db is not None:
-        s, mudas, k = _prod_core(db[0], db[1])
-        k["source"], k["campagne"] = "db", db[2]
+        s0, lp0, cid, ev = db
+        s, mudas, k = _prod_core(s0, lp0, evts_db=_prod_db_events(s0, lp0, ev))
+        k["source"], k["campagne"] = "db", cid
         return s, mudas, k
     s0, lp0 = _prod_demo_frames()
     s, mudas, k = _prod_core(s0, lp0)
     k["source"], k["campagne"] = "demo", PROD_CAMPAGNE["campagne"]
     return s, mudas, k
-
-
-# ── PLAN D'ACTIONS : persistance en base (spec §3.5 / §4.4-5) ───────────────
-# Lecture par la connexion lecture seule ; écriture par un rôle DISTINCT limité
-# à prod_actions. Sans secrets d'écriture, l'écran reste consultable + export CSV.
-PROD_STATUTS_DB = ["a_lancer", "en_cours", "cloturee", "abandonnee"]
-PROD_STATUTS_UI = (["À lancer", "En cours", "Clôturée", "Abandonnée"] if _PF
-                   else ["To start", "In progress", "Closed", "Dropped"])
-_ST_UI2DB = dict(zip(PROD_STATUTS_UI, PROD_STATUTS_DB))
-_ST_DB2UI = dict(zip(PROD_STATUTS_DB, PROD_STATUTS_UI))
-
-
-def _prod_write_conn():
-    """Connexion d'écriture (rôle supplystack_actions). None si non configurée."""
-    try:
-        user = st.secrets.get("supabase_actions_user", "")
-        pwd = st.secrets.get("supabase_actions_password", "")
-    except Exception:
-        user = pwd = ""
-    if not user or not pwd:
-        return None
-    cfg = dict(DB_CONFIG)
-    cfg["user"], cfg["password"] = user, pwd
-    conn = psycopg2.connect(**cfg)
-    conn.autocommit = False          # transaction explicite : tout ou rien
-    return conn
-
-
-def prod_actions_writable():
-    return bool(st.secrets.get("supabase_actions_user", "")) if hasattr(st, "secrets") else False
-
-
-@st.cache_data(ttl=30, show_spinner=False)
-def prod_actions_load():
-    """Plan d'actions depuis la base. None si la table est absente."""
-    return _prod_read("SELECT action_id, libelle, poste_id, type_muda, cause_code, "
-                      "potentiel_accessible, objectif_retenu, gain_constate, responsable, "
-                      "echeance, statut, date_constat FROM prod_actions ORDER BY action_id")
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def _prod_poste_map():
-    """poste -> poste_id (et l'inverse) pour traduire l'affichage en clés."""
-    df = _prod_read("SELECT poste_id, poste FROM prod_postes ORDER BY poste_id")
-    if df is None or df.empty:
-        return {}, {}
-    return (dict(zip(df["poste"], df["poste_id"])), dict(zip(df["poste_id"], df["poste"])))
-
-
-def prod_actions_save(rows):
-    """Remplace le plan en base, dans UNE transaction (rien de partiel).
-    rows : liste de dicts aux clés des colonnes de prod_actions."""
-    conn = _prod_write_conn()
-    if conn is None:
-        return False, ("Écriture non configurée : ajoutez supabase_actions_user / "
-                       "supabase_actions_password dans les secrets." if _PF else
-                       "Write not configured: add supabase_actions_user / "
-                       "supabase_actions_password to the secrets.")
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM prod_actions")
-            for r in rows:
-                cur.execute(
-                    "INSERT INTO prod_actions (libelle, poste_id, type_muda, cause_code, "
-                    "potentiel_accessible, objectif_retenu, gain_constate, responsable, "
-                    "echeance, statut, date_constat) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (r["libelle"], r["poste_id"], r["type_muda"], r["cause_code"],
-                     r["potentiel_accessible"], r["objectif_retenu"], r["gain_constate"],
-                     r["responsable"], r["echeance"], r["statut"], r["date_constat"]))
-        conn.commit()
-        return True, None
-    except Exception as e:
-        conn.rollback()
-        return False, str(e)
-    finally:
-        conn.close()
 
 
 def prod_aggregate(level):
@@ -1917,18 +2110,38 @@ def prod_unavailable(msg):
 
 
 def prod_natures_note():
-    txt = ("Trois natures économiques distinctes, jamais additionnées : les pertes constatées sont des "
-           "décaissements réels ; la capacité non exploitée n'est valorisée qu'à hauteur de la demande "
-           "capable de l'absorber (taux d'absorption " + f"{TAUX_ABSORPTION_DEMANDE*100:.0f}" + " %) ; "
-           "le capital immobilisé est un coût de portage (" + f"{TAUX_POSSESSION_ANNUEL*100:.0f}" + " %/an), pas une perte."
+    txt = ("Trois natures économiques distinctes, jamais additionnées. Les pertes constatées sont des "
+           "décaissements réels. La capacité n'est chiffrée que sur les postes réellement contraints "
+           f"(taux de charge ≥ {SEUIL_CONTRAINTE*100:.0f} %) et non rattrapables : ailleurs le travail se termine "
+           "quand même, la perte vaut 0 €. Le capital immobilisé est un coût de portage "
+           f"({TAUX_POSSESSION_ANNUEL*100:.0f} %/an), pas une perte."
            if _PF else
-           "Three distinct economic natures, never summed: booked losses are real cash out; unexploited "
-           "capacity is valued only up to the demand able to absorb it (absorption rate " +
-           f"{TAUX_ABSORPTION_DEMANDE*100:.0f}" + "%); capital tied up is a carrying cost (" +
-           f"{TAUX_POSSESSION_ANNUEL*100:.0f}" + "%/yr), not a loss.")
+           "Three distinct economic natures, never summed. Booked losses are real cash out. Capacity is "
+           f"valued only on genuinely constrained stations (load ≥ {SEUIL_CONTRAINTE*100:.0f}%) that cannot catch up: "
+           "elsewhere the work still gets done, so the loss is €0. Capital tied up is a carrying cost "
+           f"({TAUX_POSSESSION_ANNUEL*100:.0f}%/yr), not a loss.")
     st.markdown('<div style="background:#fff7ed;border-left:4px solid #f59e0b;border-radius:8px;'
                 'padding:9px 13px;font-size:12px;color:#92400e;margin:2px 0 14px;">⚠️ ' + txt + '</div>',
                 unsafe_allow_html=True)
+
+
+def methode_badge(methode, confiance):
+    """Distingue visuellement une valorisation fine (E1→E6) d'un repli (§5.3)."""
+    fine = methode in METHODES_FINES
+    lib = {"E3_cout_direct": ("Coût direct" if _PF else "Direct cost"),
+           "E5_non_contraint": ("Poste non contraint" if _PF else "Station not constrained"),
+           "E6_recuperable": ("Rattrapé avant échéance" if _PF else "Caught up before due date"),
+           "E6_perte_ferme": ("Perte ferme sur contrainte" if _PF else "Firm loss on constraint"),
+           "E2_aucune_ressource": ("Aucune ressource bloquée" if _PF else "No resource blocked"),
+           "portage": ("Coût de portage" if _PF else "Carrying cost"),
+           "defauts_directs": ("Décaissement direct" if _PF else "Direct cash out"),
+           "absorption_globale": ("Repli — absorption globale" if _PF else "Fallback — global absorption"),
+           }.get(methode, methode)
+    col = "#0f7a4d" if fine else "#a15c07"
+    bg = "#e7f7ef" if fine else "#fef3e2"
+    return (f'<span style="background:{bg};color:{col};font-size:10.5px;font-weight:600;'
+            f'padding:2px 7px;border-radius:5px;white-space:nowrap;">{lib}</span>'
+            f' <span style="color:#f59e0b;font-size:11px;">{etoiles(confiance)}</span>')
 
 
 def _trs_class(v):
@@ -1987,22 +2200,46 @@ PREFER THESE VIEWS (they apply the aggregation rules correctly):
 - v_prod_pareto_causes — quantities by cause_code (may be empty if causes not yet coded)
 - v_prod_suivi_campagnes — weighted D/P/Q/TRS per campaign (trend)
 
-VALUATION PARAMETERS (calibrated for this client — use them to convert quantities to euros):
+VALUATION PARAMETERS (calibrated for this client):
 - COUT_HORAIRE_MO = {COUT_HORAIRE_MO} €/h (loaded labour)
 - COUT_HORAIRE_MACHINE = {COUT_HORAIRE_MACHINE} €/h default (prod_postes overrides per poste)
-- TAUX_ABSORPTION_DEMANDE = {TAUX_ABSORPTION_DEMANDE} — EVERY hours->euros conversion of
-  nature 'capacite' MUST be multiplied by this rate, and you must say so
+- MARGE_COUT_VARIABLE_UNITAIRE = {MARGE_COUT_VARIABLE_UNITAIRE} €/piece (contribution margin)
+- SEUIL_CONTRAINTE = {SEUIL_CONTRAINTE} — load rate above which a station is a real constraint
 - TAUX_POSSESSION_ANNUEL = {TAUX_POSSESSION_ANNUEL} — 'capital' nature = value × this rate
+- TAUX_ABSORPTION_DEMANDE = {TAUX_ABSORPTION_DEMANDE} — FALLBACK ONLY (see E5/E6 below)
+
+VALUATION DOCTRINE — the E1→E6 tree. This REPLACED the global absorption rate as the
+main method. Never present absorption as the rule; it is the degraded fallback.
+- E1/E2 qualify the event: which resource was actually blocked (ressource_bloquee) and
+  whether the operator was reassigned (operateur_reaffecte). 'aucune' => 0 €, a VALID result.
+- E3 direct cost: an operator idle and NOT reassigned = hours actually paid => 'constate'.
+  Hours that were WORKED but add no value (transport, motion, over-processing) are NOT a
+  cash-out: removing them refunds no salary, it frees capacity => capacity path.
+- E4 pieces lost = duree_arret_h × 3600 / temps_cycle_effectif_s, divided by
+  nb_machines_paralleles when the station has several machines.
+- E5 constraint test: taux_charge = charge_requise_h / capacite_nette_h. If it is BELOW
+  {SEUIL_CONTRAINTE}, the station is not a constraint: the work still gets done, so the
+  capacity is worth 0 €. Saying "0 €" here is a correct, defensible answer.
+- E6 recovery: if the loss can be caught up before the due date, capacity = 0 €.
+  Otherwise capacity = pieces lost × MARGE_COUT_VARIABLE_UNITAIRE => 'capacite'.
+- FALLBACK: if charge_requise_h or capacite_nette_h is missing, E5/E6 cannot decide.
+  Then and only then: hours × hourly cost × TAUX_ABSORPTION_DEMANDE, method
+  'absorption_globale', confidence forced to ★. Say explicitly that it is a fallback.
+
+CONFIDENCE (source M/S/E × cost level A/B/C):
+★★★ = measured or system-extracted AND validated client cost. ★★ = one axis degraded.
+★ = anything estimated (E) or parametric (C), including every 'absorption_globale' figure.
+A ★ figure must never be presented with the same assurance as a ★★★ one.
 
 NON-NEGOTIABLE RULES (they define the product's credibility):
 - R4: NEVER add the three natures ('constate', 'capacite', 'capital') into one total.
-  Present them separately, always labelled.
-- R1: always present the PHYSICAL quantity first (hours, pieces, units), then its
-  valuation with the rule used.
-- 'capacite' euros are potential, not booked savings: real only if demand absorbs them.
-- 'capital' euros are a carrying cost, not a loss.
-- Scrap ('defauts' with commentaire='rebuts') is valued at the cost accumulated up to
-  the step, never at full standard cost.
+- R1: always give the PHYSICAL quantity first (hours, pieces, units), then its valuation
+  and the method that produced it.
+- One event yields AT MOST ONE line per nature — never count the same hours twice
+  (paid hours + OEE loss + lost output would be triple counting).
+- 'capacite' euros are foregone potential, not booked savings. 'capital' euros are a
+  carrying cost, not a loss.
+- Scrap is valued at the cost ACCUMULATED up to the step, never at full standard cost.
 """
 
 if _PF:
@@ -2014,7 +2251,7 @@ RÈGLES :
 1. Utilisez l'outil query_database (SELECT uniquement). N'inventez jamais de chiffres.
 2. Préférez les vues v_prod_* : elles appliquent les pondérations correctes. Ne moyennez JAMAIS des ratios de TRS entre postes — utilisez v_prod_trs_agrege.
 3. Quantité physique d'abord, euros ensuite, nature toujours nommée. Jamais de total combinant les trois natures (règle produit non négociable).
-4. Toute valorisation d'heures de capacité est multipliée par le taux d'absorption ({TAUX_ABSORPTION_DEMANDE*100:.0f} %) et vous le dites explicitement.
+4. La capacité se valorise par l'arbre E1→E6 : un poste sous {SEUIL_CONTRAINTE*100:.0f} % de charge n'est pas contraint, sa capacité perdue vaut 0 € et c'est une réponse juste. Le taux d'absorption n'est qu'un REPLI quand charge/capacité manquent — dites-le et marquez le montant ★.
 5. Le goulot se lit dans v_prod_charge_poste (taux_charge max), pas au temps de cycle le plus long.
 6. Un TRS se commente par sa composante dominante (D, P ou Q) et des pistes d'investigation — jamais une cause présentée comme établie.
 7. Reliez vos constats aux actions de prod_actions quand c'est pertinent (potentiel, objectif, statut).
@@ -2031,7 +2268,7 @@ RULES:
 1. Use the query_database tool (SELECT only). Never invent figures.
 2. Prefer the v_prod_* views: they apply correct weighting. NEVER average OEE ratios across stations — use v_prod_trs_agrege.
 3. Physical quantity first, euros second, nature always named. Never a total combining the three natures (non-negotiable product rule).
-4. Every capacity hours->euros conversion is multiplied by the absorption rate ({TAUX_ABSORPTION_DEMANDE*100:.0f}%) and you say so explicitly.
+4. Capacity is valued through the E1→E6 tree: a station below {SEUIL_CONTRAINTE*100:.0f}% load is not a constraint, its lost capacity is worth €0, and that is a correct answer. The absorption rate is only a FALLBACK when load/capacity are missing — say so and mark the figure ★.
 5. The bottleneck is read from v_prod_charge_poste (max taux_charge), not the longest cycle time.
 6. Comment OEE through its dominant component (D, P or Q) with investigation leads — never a cause stated as established.
 7. Tie findings to prod_actions when relevant (potential, target, status).
@@ -3799,8 +4036,8 @@ if _page == P_SYNTH:
         d = _delta_txt(_pdelta["k"])
         st.markdown(kpi_card(N_CAPA, format_currency(k["capacite"] * _pfac), "kpi-warning",
             delta=d[0], delta_color=d[1],
-            info=(f"Heures non productives × coût horaire × taux d'absorption ({TAUX_ABSORPTION_DEMANDE*100:.0f} %). Une heure libérée ne vaut un euro que si la demande l'absorbe." if _PF
-                  else f"Non-productive hours × hourly cost × absorption rate ({TAUX_ABSORPTION_DEMANDE*100:.0f}%). A freed hour is worth money only if demand absorbs it.")), unsafe_allow_html=True)
+            info=(f"Chiffrée uniquement sur les postes réellement contraints (charge ≥ {SEUIL_CONTRAINTE*100:.0f} %) et non rattrapables, à la marge sur coût variable. Ailleurs le travail se termine quand même : la perte vaut 0 €." if _PF
+                  else f"Valued only on genuinely constrained stations (load ≥ {SEUIL_CONTRAINTE*100:.0f}%) that cannot catch up, at contribution margin. Elsewhere the work still gets done: the loss is €0.")), unsafe_allow_html=True)
     with c3:
         d = _delta_txt(_pdelta["i"])
         st.markdown(kpi_card(N_CAPI, format_currency(k["capital"] * _pfac), "kpi-capital",
@@ -3995,9 +4232,12 @@ if _page == P_MUDA:
     cO = "Occurrences"
     cH = ("Heures" if _PF else "Hours")
     cV = ("Impact économique" if _PF else "Economic impact")
+    cM = ("Méthode / confiance" if _PF else "Method / confidence")
     tbl = pd.DataFrame({
         "Muda": mudas["muda"], cQ: mudas["qty_label"], cU: mudas["unite"],
-        cO: mudas["occurrences"], cH: mudas["heures"], cV: mudas["value"], "Nature": mudas["nature"],
+        cO: mudas["occurrences"], cH: mudas["heures"], cV: mudas["value"],
+        "Nature": mudas["nature"],
+        cM: [methode_badge(m, c) for m, c in zip(mudas["methode"], mudas["confiance"])],
     })
     def _nat_style(v):
         col = PROD_NATURE_COLOR.get(str(v), "#64748b")
@@ -4005,7 +4245,12 @@ if _page == P_MUDA:
     render_table(tbl, formats={cO: lambda v: format_number(v),
                                cH: lambda v: (f"{float(v):,.0f}" if float(v) > 0 else "—"),
                                cV: lambda v: format_currency(v)},
-                 cell_style={"Nature": _nat_style})
+                 cell_style={"Nature": _nat_style}, raw_html=[cM])
+    st.caption(("Vert = valorisation fine (arbre E1→E6, doctrine terrain). Orange = repli sur "
+                "l'absorption globale, faute de charge/capacité rattachées au poste — un montant "
+                "★ ne se présente pas comme un montant ★★★." if _PF else
+                "Green = fine valuation (E1→E6 tree). Orange = fallback on global absorption, "
+                "for lack of station load/capacity — a ★ figure is not presented like a ★★★ one."))
 
     # ── Bascule d'axe de lecture (spec 3.3) ─────────────────────────────────
     axes = ([("Impact €", "value"), ("Occurrences", "occurrences"),
@@ -4171,8 +4416,8 @@ if _page == P_POSTE:
             format_currency(pot), "",
             info=("Une capacité, pas un gain : elle ne vaut que si la demande l'absorbe." if _PF
                   else "A capacity, not a gain: worth money only if demand absorbs it.")), unsafe_allow_html=True)
-        st.markdown(kpi_card((f"Valeur réalisable (absorption {TAUX_ABSORPTION_DEMANDE*100:.0f} %)" if _PF
-                              else f"Realisable value (absorption {TAUX_ABSORPTION_DEMANDE*100:.0f}%)"),
+        st.markdown(kpi_card((f"Valeur réalisable (hypothèse d'absorption {TAUX_ABSORPTION_DEMANDE*100:.0f} %)" if _PF
+                              else f"Realisable value (absorption assumption {TAUX_ABSORPTION_DEMANDE*100:.0f}%)"),
             format_currency(real), "kpi-success"), unsafe_allow_html=True)
 
     # ── Simulateur SMED (spec 3.4) ──────────────────────────────────────────
@@ -4199,8 +4444,8 @@ if _page == P_POSTE:
         st.markdown(kpi_card(("Valeur potentielle (capacité)" if _PF else "Potential value (capacity)"),
             format_currency(pot2), "",
             info=("Une capacité, pas un gain." if _PF else "A capacity, not a gain.")), unsafe_allow_html=True)
-        st.markdown(kpi_card((f"Valeur réalisable (absorption {TAUX_ABSORPTION_DEMANDE*100:.0f} %)" if _PF
-                              else f"Realisable value (absorption {TAUX_ABSORPTION_DEMANDE*100:.0f}%)"),
+        st.markdown(kpi_card((f"Valeur réalisable (hypothèse d'absorption {TAUX_ABSORPTION_DEMANDE*100:.0f} %)" if _PF
+                              else f"Realisable value (absorption assumption {TAUX_ABSORPTION_DEMANDE*100:.0f}%)"),
             format_currency(real2), "kpi-success"), unsafe_allow_html=True)
 
 
