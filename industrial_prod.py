@@ -2056,6 +2056,85 @@ def prod_compute():
     return s, mudas, k
 
 
+# ── PLAN D'ACTIONS : persistance en base (dictionnaire §3.7, spec §4.4-5) ───
+# Lecture par la connexion lecture seule ; écriture par un rôle DISTINCT limité
+# à prod_actions. Sans secrets d'écriture, l'écran reste consultable + export CSV.
+PROD_STATUTS_DB = ["a_lancer", "en_cours", "cloturee", "abandonnee"]
+PROD_STATUTS_UI = (["À lancer", "En cours", "Clôturée", "Abandonnée"] if _PF
+                   else ["To start", "In progress", "Closed", "Dropped"])
+_ST_UI2DB = dict(zip(PROD_STATUTS_UI, PROD_STATUTS_DB))
+_ST_DB2UI = dict(zip(PROD_STATUTS_DB, PROD_STATUTS_UI))
+
+
+def _prod_write_conn():
+    """Connexion d'écriture (rôle supplystack_actions). None si non configurée."""
+    try:
+        user = st.secrets.get("supabase_actions_user", "")
+        pwd = st.secrets.get("supabase_actions_password", "")
+    except Exception:
+        user = pwd = ""
+    if not user or not pwd:
+        return None
+    cfg = dict(DB_CONFIG)
+    cfg["user"], cfg["password"] = user, pwd
+    conn = psycopg2.connect(**cfg)
+    conn.autocommit = False          # transaction explicite : tout ou rien
+    return conn
+
+
+def prod_actions_writable():
+    try:
+        return bool(st.secrets.get("supabase_actions_user", ""))
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def prod_actions_load():
+    """Plan d'actions depuis la base. None si la table est absente."""
+    return _prod_read("SELECT action_id, libelle, poste_id, type_muda, cause_code, "
+                      "potentiel_accessible, objectif_retenu, gain_constate, responsable, "
+                      "echeance, statut, date_constat FROM prod_actions ORDER BY action_id")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _prod_poste_map():
+    """poste -> poste_id et l'inverse, pour traduire l'affichage en clés."""
+    df = _prod_read("SELECT poste_id, poste FROM prod_postes ORDER BY poste_id")
+    if df is None or df.empty:
+        return {}, {}
+    return (dict(zip(df["poste"], df["poste_id"])), dict(zip(df["poste_id"], df["poste"])))
+
+
+def prod_actions_save(rows):
+    """Remplace le plan en base, dans UNE transaction (jamais d'état partiel)."""
+    conn = _prod_write_conn()
+    if conn is None:
+        return False, ("Écriture non configurée : ajoutez supabase_actions_user / "
+                       "supabase_actions_password dans les secrets." if _PF else
+                       "Write not configured: add supabase_actions_user / "
+                       "supabase_actions_password to the secrets.")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM prod_actions")
+            for r in rows:
+                cur.execute(
+                    "INSERT INTO prod_actions (libelle, poste_id, type_muda, cause_code, "
+                    "potentiel_accessible, objectif_retenu, gain_constate, responsable, "
+                    "echeance, statut, date_constat) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (r["libelle"], r["poste_id"], r["type_muda"], r["cause_code"],
+                     r["potentiel_accessible"], r["objectif_retenu"], r["gain_constate"],
+                     r["responsable"], r["echeance"], r["statut"], r["date_constat"]))
+        conn.commit()
+        return True, None
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally:
+        conn.close()
+
+
 def prod_aggregate(level):
     """TRS pondéré multi-niveaux (spec 2.2) : usine → atelier → ligne → poste.
     Toujours agrégé sur les temps sous-jacents, jamais moyenne de ratios."""
@@ -4471,7 +4550,9 @@ if _page == P_ACTIONS:
     _poste2id, _id2poste = _prod_poste_map()
 
     _db = prod_actions_load()
-    _from_db = _db is not None
+    # Un tableau sans la colonne 'libelle' (table absente, lecture dégradée) ne doit
+    # pas être traité comme une source valide — sinon KeyError à l'affichage.
+    _from_db = _db is not None and "libelle" in getattr(_db, "columns", [])
     _EMPTY = pd.DataFrame(columns=[cAc, cPo, cMu, cCa, cPot, cObj, cRe, cEc, cSt, cGa, cDc])
 
     if _from_db:
