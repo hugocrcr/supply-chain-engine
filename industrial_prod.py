@@ -1489,7 +1489,6 @@ N_CONST = ("Pertes économiques constatées" if _PF else "Booked economic losses
 N_CAPA  = ("Capacité valorisée non exploitée" if _PF else "Unexploited valued capacity")
 N_CAPI  = ("Capital immobilisé" if _PF else "Capital tied up")
 PROD_NATURE_COLOR = {N_CONST: "#e5484d", N_CAPA: "#f79009", N_CAPI: "#6355ff"}
-NATURE_UI = {NAT_CONST: N_CONST, NAT_CAPA: N_CAPA, NAT_CAPI: N_CAPI}
 
 st.markdown("""
 <style>
@@ -1508,6 +1507,8 @@ st.markdown("""
 # (capacite) — ce ne sont pas les mêmes euros — mais jamais deux fois la même.
 # ══════════════════════════════════════════════════════════════════════════════
 NAT_CONST, NAT_CAPA, NAT_CAPI = "constate", "capacite", "capital"
+# Correspondance code interne -> libellé affiché (défini APRÈS N_CONST/N_CAPA/N_CAPI)
+NATURE_UI = {NAT_CONST: N_CONST, NAT_CAPA: N_CAPA, NAT_CAPI: N_CAPI}
 
 PROD_DOCTRINE = {
     "defauts":        dict(fr="Défauts", en="Defects", unite="pieces", nature=NAT_CONST),
