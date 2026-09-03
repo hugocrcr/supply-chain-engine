@@ -261,7 +261,7 @@ T_ALL = {
         "chart_type_mix": "Répartition par type d'article",
         "chart_abcxyz": "Matrice ABC × XYZ",
         "chart_trend": "Évolution du stock total",
-        "rail_ai": "ASSISTANT IA",
+        "rail_constat": "CONSTAT DU JOUR",
         "rail_alerts": "Alertes récentes",
         "rail_reorder": "Réappro prioritaires",
         "live": "en direct",
@@ -381,7 +381,7 @@ T_ALL = {
         "chart_type_mix": "Breakdown by article type",
         "chart_abcxyz": "ABC × XYZ matrix",
         "chart_trend": "Total inventory trend",
-        "rail_ai": "AI ASSISTANT",
+        "rail_constat": "TODAY'S KEY FINDING",
         "rail_alerts": "Recent alerts",
         "rail_reorder": "Priority reorders",
         "live": "live",
@@ -1404,6 +1404,92 @@ def ask_claude(user_question, conversation_history, text_placeholder=None, syste
     if text_placeholder is not None:
         text_placeholder.markdown(fallback_msg)
     return fallback_msg, dataframes
+
+
+def insight_executif(r, n_pdr_sauves=0, n_derive=0):
+    """Constat du jour pour la carte de synthèse.
+
+    Choisit le sujet DOMINANT parmi plusieurs candidats au lieu de raconter
+    toujours la même histoire : un client sans stock dormant mais avec des
+    ruptures doit lire une phrase sur ses ruptures. Chaque candidat porte un
+    score comparable (part du parc ou écart au seuil) ; on retient les deux
+    premiers. Aucune phrase n'est produite si le chiffre qui la porte est nul.
+    """
+    fr = (CLIENT_LANG == "fr")
+    g = lambda k, d=0.0: (float(r[k]) if k in r and pd.notna(r[k]) else d)
+    stock = g("total_stock_value")
+    refs = max(g("total_active_refs"), 1.0)
+    rec = g("recoverable_cash_est")
+    bfr = g("working_capital_tied")
+    otd = g("supplier_otd_rate", 100.0)
+    n_risk = g("stockout_risk_ref_count")
+    couv = g("avg_coverage_days")
+    rot = g("stock_turnover_ratio")
+
+    cands = []   # (score, phrase)
+
+    if n_risk > 0:
+        cands.append((min(100.0, n_risk / refs * 100 * 6),
+            (f"<b>{format_number(n_risk)} références</b> passeront sous leur seuil de sécurité "
+             f"avant le prochain réapprovisionnement." if fr else
+             f"<b>{format_number(n_risk)} references</b> will drop below their safety threshold "
+             f"before the next replenishment.")))
+
+    if otd < 85:
+        cands.append((85.0 - otd,
+            (f"Vos fournisseurs livrent à l'heure dans <b>{format_pct(otd)}</b> des cas — "
+             f"c'est ce qui vous oblige à surstocker." if fr else
+             f"Suppliers deliver on time <b>{format_pct(otd)}</b> of the time — "
+             f"that is what forces you to overstock.")))
+
+    if rec > 0 and stock > 0:
+        cands.append((rec / stock * 100 * 2,
+            (f"<b>{format_currency(rec)}</b> de trésorerie mobilisable sur "
+             f"<b>{format_currency(bfr)}</b> immobilisés." if fr else
+             f"<b>{format_currency(rec)}</b> of cash is mobilisable out of "
+             f"<b>{format_currency(bfr)}</b> tied up.")))
+
+    if n_derive > 0:
+        cands.append((min(100.0, n_derive / refs * 100 * 3),
+            (f"<b>{format_number(n_derive)} références</b> ont un point de commande ERP qui "
+             f"s'écarte de plus de 25 % de ce que la demande réelle impose." if fr else
+             f"<b>{format_number(n_derive)} references</b> have an ERP reorder point deviating "
+             f"more than 25% from what real demand requires.")))
+
+    if couv > 180:
+        _mois = couv / 30.4
+        _duree = (f"{_mois:.0f} mois" if _mois < 24 else f"{_mois/12:.1f} ans") if fr else \
+                 (f"{_mois:.0f} months" if _mois < 24 else f"{_mois/12:.1f} years")
+        cands.append((min(100.0, (couv - 180) / 10),
+            (f"Votre couverture moyenne atteint <b>{format_number(couv)} jours</b> : "
+             f"le stock finance <b>{_duree}</b> d'activité." if fr else
+             f"Average coverage reaches <b>{format_number(couv)} days</b>: "
+             f"inventory funds <b>{_duree}</b> of activity.")))
+
+    if rot and rot < 2:
+        cands.append((max(0.0, (2 - rot) * 25),
+            (f"Votre stock ne tourne que <b>{format_number(rot, 2)} fois par an</b> — "
+             f"sous deux tours, le capital dort." if fr else
+             f"Inventory turns only <b>{format_number(rot, 2)} times a year</b> — "
+             f"below two turns, capital sits idle.")))
+
+    if not cands:
+        return ("Aucun signal critique sur votre parc : couverture, service fournisseur et "
+                "rotation sont dans les clous." if fr else
+                "No critical signal on your inventory: coverage, supplier service and "
+                "turnover are all within range.")
+
+    cands.sort(key=lambda x: x[0], reverse=True)
+    phrases = [p for _, p in cands[:2]]
+
+    # Argument produit : uniquement s'il porte sur un chiffre réel
+    if n_pdr_sauves > 0:
+        phrases.append(
+            (f"Le seuil de dormance différencié évite <b>{format_number(n_pdr_sauves)} faux positifs</b> "
+             f"sur vos pièces de rechange." if fr else
+             f"Type-specific dormancy thresholds avoid <b>{format_number(n_pdr_sauves)} false positives</b> "
+             f"on your spare parts."))
+    return " ".join(phrases)
 
 
 # ── AURORA HEADER ─────────────────────────────────────────────────────────────
@@ -2618,22 +2704,19 @@ if _page == LOG_PAGES[0]:
                    "Dead stock concentrates your working capital risk.")
         try:
             if not kpi_data.empty:
-                r = kpi_data.iloc[0]
-                pdr_saved = run_query("""
+                _pdr = run_query("""
                     SELECT COUNT(*) AS c FROM inventory
                     WHERE article_type = 'PDR' AND days_since_movement > 365 AND is_dead_stock = false
                 """)
-                n_saved = int(pdr_saved.iloc[0]["c"]) if not pdr_saved.empty else 0
-                if CLIENT_LANG == "fr":
-                    insight = (f"<b>{format_currency(r['recoverable_cash_est'])}</b> de trésorerie mobilisable "
-                               f"sur <b>{format_currency(r['working_capital_tied'])}</b> immobilisés. "
-                               f"Le seuil de dormance différencié par type d'article évite "
-                               f"<b>{n_saved} faux positifs</b> sur vos pièces de rechange.")
-                else:
-                    insight = (f"<b>{format_currency(r['recoverable_cash_est'])}</b> of cash is mobilisable "
-                               f"out of <b>{format_currency(r['working_capital_tied'])}</b> tied up. "
-                               f"Type-specific dormancy thresholds avoid "
-                               f"<b>{n_saved} false positives</b> on your spare parts.")
+                _n_pdr = int(_pdr.iloc[0]["c"]) if _pdr is not None and not _pdr.empty else 0
+                _drv = run_query("""
+                    SELECT COUNT(*) AS c FROM inventory
+                    WHERE calculated_reorder_point IS NOT NULL AND erp_reorder_point IS NOT NULL
+                      AND erp_reorder_point > 0
+                      AND ABS(calculated_reorder_point - erp_reorder_point) / erp_reorder_point > 0.25
+                """)
+                _n_drv = int(_drv.iloc[0]["c"]) if _drv is not None and not _drv.empty else 0
+                insight = insight_executif(kpi_data.iloc[0], _n_pdr, _n_drv)
         except Exception:
             pass
 
@@ -2642,8 +2725,8 @@ if _page == LOG_PAGES[0]:
              box-shadow:0 18px 38px -18px rgba(99,85,255,0.7); margin-bottom:16px;">
           <div style="display:flex; align-items:center; gap:8px; margin-bottom:13px;">
             <span style="width:24px;height:24px;border-radius:8px;background:rgba(255,255,255,0.2);
-                  display:flex;align-items:center;justify-content:center;font-size:13px;">✦</span>
-            <span style="font-size:10px; font-weight:700; letter-spacing:0.12em;">{T['rail_ai']}</span>
+                  display:flex;align-items:center;justify-content:center;font-size:13px;">◆</span>
+            <span style="font-size:10px; font-weight:700; letter-spacing:0.12em;">{T['rail_constat']}</span>
           </div>
           <p style="margin:0; font-size:13.5px; font-weight:500; line-height:1.55; color:rgba(255,255,255,0.94);">{insight}</p>
         </div>
